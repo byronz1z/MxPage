@@ -17,7 +17,69 @@ MxPage is an MIT-licensed, locally deployable workspace for product hero images,
 - Shared task queue, stage/per-image timing, API cost and stability charts, CNY estimates with editable conversion.
 - Local avatar/profile, rolling 12-month usage heatmap, model settings and appearance.
 
-Presets do not publish to marketplaces. This is an image-production workspace, not a storefront builder. [Examples and provenance](docs/examples/README.md); [historical v0.2.0 screenshots](docs/screenshots/README.md).
+Presets do not publish to marketplaces. This is an image-production workspace, not a storefront builder.
+
+## Current screenshots
+
+Captured from the running **v0.3.0 application on October 17, 2026**. Only the homepage and result editor are shown. The editor uses the latest local candle project, including phone preview, image editing and per-stage/image timing.
+
+![MxPage v0.3.0 homepage](docs/screenshots/v0.3.0/home.jpg)
+
+<details>
+<summary>Result editor — phone preview, editing and task timing</summary>
+
+![MxPage v0.3.0 candle result editor](docs/screenshots/v0.3.0/editor-phone.jpg)
+
+</details>
+
+[Full screenshots and capture notes](docs/screenshots/README.md)
+
+## Real generated examples
+
+These are actual local outputs, resized/compressed for documentation without retouching their content. Every case includes the source photo, all hero images, individual detail panels and the complete stitched page.
+
+### Latest local projects
+
+| Gradient candle | Aroma burner | Wood-look desktop diffuser |
+| --- | --- | --- |
+| [![Candle hero](docs/examples/gradient-candle/hero-1.jpg)](docs/examples/gradient-candle/README.md) | [![Burner hero](docs/examples/aroma-burner/hero-1.jpg)](docs/examples/aroma-burner/README.md) | [![Diffuser hero](docs/examples/wood-diffuser/hero-1.jpg)](docs/examples/wood-diffuser/README.md) |
+| 4 heroes + 6 detail panels | 4 heroes + 6 detail panels | 3 heroes + 4 detail panels |
+| [Full page · 1080 × 8640](docs/examples/gradient-candle/detail-long.jpg) | [Full page · 1080 × 8640](docs/examples/aroma-burner/detail-long.jpg) | [Full page · 1080 × 5760](docs/examples/wood-diffuser/detail-long.jpg) |
+
+**Gradient candle — all six detail panels**
+
+[![Candle detail overview](docs/examples/gradient-candle/detail-overview.jpg)](docs/examples/gradient-candle/detail-long.jpg)
+
+**Aroma burner — all six detail panels**
+
+[![Burner detail overview](docs/examples/aroma-burner/detail-overview.jpg)](docs/examples/aroma-burner/detail-long.jpg)
+
+**Desktop diffuser — all four detail panels**
+
+[![Diffuser detail overview](docs/examples/wood-diffuser/detail-overview.jpg)](docs/examples/wood-diffuser/detail-long.jpg)
+
+These three projects used `gpt-6-luna` and `gpt-image-2.5-flare`, with requested quality `auto`. Their recorded review status is `PARTIAL`. Some specifications came from user-selected model estimates; they are demonstration inputs, not measured product facts. Individual case pages preserve provenance and review limitations.
+
+### Tea set and mug studies
+
+| Lidded tea vessel | Mug — complete-content retest | Mug — Round 2 |
+| --- | --- | --- |
+| [![Tea hero](docs/examples/tea-set/hero-1.jpg)](docs/examples/tea-set/README.md) | [![Complete mug hero](docs/examples/mug-complete/hero-1.jpg)](docs/examples/mug-complete/README.md) | [![Round 2 mug hero](docs/examples/mug-round2/hero-1.jpg)](docs/examples/mug-round2/README.md) |
+| 3 heroes + 8 detail panels | 3 heroes + 8 detail panels | 3 heroes + 4 detail panels |
+| [Full page · 1080 × 11520](docs/examples/tea-set/detail-long.jpg) | [Full page · 1080 × 11520](docs/examples/mug-complete/detail-long.jpg) | [Full page · 1080 × 5760](docs/examples/mug-round2/detail-long.jpg) |
+
+<details>
+<summary>Expand tea and mug detail-page overviews</summary>
+
+[![Tea eight-panel overview](docs/examples/tea-set/detail-overview.jpg)](docs/examples/tea-set/detail-long.jpg)
+
+[![Complete mug eight-panel overview](docs/examples/mug-complete/detail-overview.jpg)](docs/examples/mug-complete/detail-long.jpg)
+
+[![Round 2 mug four-panel overview](docs/examples/mug-round2/detail-overview.jpg)](docs/examples/mug-round2/detail-long.jpg)
+
+</details>
+
+These three studies used `gpt-6-luna` and `gpt-image-2.5-flare` at `low` quality. Outputs retain review warnings or incomplete reviews; they are not certified listing-ready assets. [All cases, source photos and notes](docs/examples/README.md).
 
 ## Desktop downloads
 

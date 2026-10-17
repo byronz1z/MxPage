@@ -1,6 +1,42 @@
 # 生成案例
 
-本目录保存 2026-10-01 本地生成结果中的精选展示图，README 使用相对路径，克隆仓库后也可查看。仅做等比缩放与 JPEG 压缩，没有重写成图中的文字或局部修图。
+2026-10-17 更新：收录最新本地作品及茶器、马克杯实测的完整套图。使用相对路径，克隆仓库后也可查看。只做等比缩放、JPEG 压缩、概览排布和按详情顺序拼接，没有补字、局部修图或重新生成。
+
+## 最新本地作品
+
+直接取自用户本地作品的当前图片版本，均在 2026-10-17 生成。保留上传原图、所有头图及详情页，长图仅拼接 DETAIL，不包含手机外框或轮播头图。
+
+| 案例 | 头图 / 详情 | 请求画质 | 完整长图 |
+| --- | --- | --- | --- |
+| [渐变色杯装蜡烛](gradient-candle/README.md) | 4 / 6 | auto | [1080 × 8640](gradient-candle/detail-long.jpg) |
+| [香薰炉](aroma-burner/README.md) | 4 / 6 | auto | [1080 × 8640](aroma-burner/detail-long.jpg) |
+| [木纹外观桌面雾化器](wood-diffuser/README.md) | 3 / 4 | auto | [1080 × 5760](wood-diffuser/detail-long.jpg) |
+
+[![渐变蜡烛六屏详情](gradient-candle/detail-overview.jpg)](gradient-candle/README.md)
+
+[![香薰炉六屏详情](aroma-burner/detail-overview.jpg)](aroma-burner/README.md)
+
+[![木纹雾化器四屏详情](wood-diffuser/detail-overview.jpg)](wood-diffuser/README.md)
+
+模型记录为 `gpt-6-luna` / `gpt-image-2.5-flare`；`auto` 是请求参数，不表示具体输出等级。三组均保留 `PARTIAL` 状态，不能将“图片全部生成”理解为“全部质检通过”。尺寸、材质等部分输入来自用户确认的模型推测选项，案例展示不构成实测规格或使用安全依据。各组的 `generation.json` 只保留标题、模型、页数、生成状态与检查摘要，不包含密钥、服务地址或请求日志。
+
+## 茶器与马克杯完整实测
+
+| 案例 | 头图 / 详情 | 请求画质 | 完整长图 |
+| --- | --- | --- | --- |
+| [金棕纹理带盖茶器](tea-set/README.md) | 3 / 8 | low | [1080 × 11520](tea-set/detail-long.jpg) |
+| [马克杯 · 完整内容重测](mug-complete/README.md) | 3 / 8 | low | [1080 × 11520](mug-complete/detail-long.jpg) |
+| [马克杯 · Round2](mug-round2/README.md) | 3 / 4 | low | [1080 × 5760](mug-round2/detail-long.jpg) |
+
+均使用 `gpt-6-luna` / `gpt-image-2.5-flare`。每个案例页都提供原图、所有头图、完整长图与逐屏文件。Round2 和完整重测是同一商品的不同内容版本，保留作对照，不将它们计为两种不同商品。
+
+[![茶器八屏详情](tea-set/detail-overview.jpg)](tea-set/README.md)
+
+[![马克杯完整重测八屏详情](mug-complete/detail-overview.jpg)](mug-complete/README.md)
+
+## 2026-10-01 历史案例
+
+以下为早期版本保留的精选图，与上方最新作品分别记录。
 
 ## 陶瓷杯 · 应用实际生成
 

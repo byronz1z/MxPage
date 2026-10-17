@@ -26,7 +26,75 @@ v0.3.0 将详情页执行器重构为 **V4 确定性状态机 + 单次结构化�
 
 详情任务支持 **3–10 张头图、4–20 张详情图**。平台预设用于内容与视觉制作，不会自动发布到平台，也不导出商城网站。
 
-[生成案例及来源说明](docs/examples/README.md) · [旧版界面截图](docs/screenshots/README.md)。截图记录的是 v0.2.0；v0.3.0 已调整设置、队列、预览和监控界面。
+## 软件截图
+
+以下为 **2026-10-17 本地运行的 v0.3.0** 实际截图，仅展示首页和效果页。效果页使用最新的渐变色杯装蜡烛作品，可查看手机预览、逐图编辑、文本与每张图片耗时。
+
+**首页 · 上传商品开始创作**
+
+![MxPage v0.3.0 首页](docs/screenshots/v0.3.0/home.jpg)
+
+<details>
+<summary>效果页 · 手机预览、图片编辑与任务耗时（展开截图）</summary>
+
+![MxPage v0.3.0 最新蜡烛作品效果页](docs/screenshots/v0.3.0/editor-phone.jpg)
+
+</details>
+
+[查看两张完整截图与拍摄说明](docs/screenshots/README.md)
+
+## 实际生成案例
+
+以下图片来自本地已生成的作品，保留原始画面与文案；展示文件只做等比缩放、压缩和按页面顺序拼接。每组均提供**商品原图、全部头图、分屏详情图和完整详情长图**，点击案例可查看大图。
+
+### 最新本地作品
+
+| 渐变色杯装蜡烛 | 香薰炉 | 木纹外观桌面雾化器 |
+| --- | --- | --- |
+| [![渐变蜡烛头图](docs/examples/gradient-candle/hero-1.jpg)](docs/examples/gradient-candle/README.md) | [![香薰炉头图](docs/examples/aroma-burner/hero-1.jpg)](docs/examples/aroma-burner/README.md) | [![木纹雾化器头图](docs/examples/wood-diffuser/hero-1.jpg)](docs/examples/wood-diffuser/README.md) |
+| 4 张头图 + 6 屏详情 | 4 张头图 + 6 屏详情 | 3 张头图 + 4 屏详情 |
+| [完整长图 · 1080 × 8640](docs/examples/gradient-candle/detail-long.jpg) | [完整长图 · 1080 × 8640](docs/examples/aroma-burner/detail-long.jpg) | [完整长图 · 1080 × 5760](docs/examples/wood-diffuser/detail-long.jpg) |
+
+**渐变蜡烛 · 6 屏详情概览**
+
+[![渐变蜡烛完整六屏详情概览](docs/examples/gradient-candle/detail-overview.jpg)](docs/examples/gradient-candle/detail-long.jpg)
+
+**香薰炉 · 6 屏详情概览**
+
+[![香薰炉完整六屏详情概览](docs/examples/aroma-burner/detail-overview.jpg)](docs/examples/aroma-burner/detail-long.jpg)
+
+**木纹雾化器 · 4 屏详情概览**
+
+[![木纹雾化器完整四屏详情概览](docs/examples/wood-diffuser/detail-overview.jpg)](docs/examples/wood-diffuser/detail-long.jpg)
+
+这三组作品使用 `gpt-6-luna` 与 `gpt-image-2.5-flare`，请求画质为 `auto`。记录保留 `PARTIAL` 质检状态；部分规格来自用户选中的模型候选，属于演示输入，不能作为实测商品参数。案例页保留具体来源和待核对项。
+
+### 茶器与马克杯长图
+
+| 金棕纹理带盖茶器 | 马克杯 · 完整内容重测 | 马克杯 · Round2 |
+| --- | --- | --- |
+| [![茶器头图](docs/examples/tea-set/hero-1.jpg)](docs/examples/tea-set/README.md) | [![马克杯完整重测头图](docs/examples/mug-complete/hero-1.jpg)](docs/examples/mug-complete/README.md) | [![马克杯 Round2 头图](docs/examples/mug-round2/hero-1.jpg)](docs/examples/mug-round2/README.md) |
+| 3 张头图 + 8 屏详情 | 3 张头图 + 8 屏详情 | 3 张头图 + 4 屏详情 |
+| [完整长图 · 1080 × 11520](docs/examples/tea-set/detail-long.jpg) | [完整长图 · 1080 × 11520](docs/examples/mug-complete/detail-long.jpg) | [完整长图 · 1080 × 5760](docs/examples/mug-round2/detail-long.jpg) |
+
+<details>
+<summary>展开茶器与马克杯的详情页概览</summary>
+
+**茶器 · 8 屏：需求、外观卖点、纹理、结构、场景、搭配、已知信息与收尾。**
+
+[![茶器八屏详情概览](docs/examples/tea-set/detail-overview.jpg)](docs/examples/tea-set/detail-long.jpg)
+
+**马克杯完整重测 · 8 屏：沿用暖木与奶油棕风格，展开正文、局部说明、场景和信息表。**
+
+[![马克杯八屏完整详情概览](docs/examples/mug-complete/detail-overview.jpg)](docs/examples/mug-complete/detail-long.jpg)
+
+**马克杯 Round2 · 4 屏：保留早期场景与配色版本，便于比较内容展开前后的差异。**
+
+[![马克杯 Round2 四屏详情概览](docs/examples/mug-round2/detail-overview.jpg)](docs/examples/mug-round2/detail-long.jpg)
+
+</details>
+
+这三组实测使用 `gpt-6-luna` 与 `gpt-image-2.5-flare` 的 `low` 画质。它们展示实际输出，不代表全部通过商品一致性或文案验收。[全部案例、原图与来源说明](docs/examples/README.md)。
 
 ## 下载与首次使用
 

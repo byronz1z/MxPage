@@ -1,0 +1,54 @@
+{
+  "name": "木纹外观桌面雾化器",
+  "collectedOn": "2026-10-17",
+  "lastRunUpdatedAt": "2026-10-17T02:01:44.875Z",
+  "workflowVersion": 4,
+  "status": "PARTIAL",
+  "models": {
+    "planning": "gpt-6-luna",
+    "image": "gpt-image-2.5-flare"
+  },
+  "quality": "auto",
+  "heroCount": 3,
+  "detailCount": 4,
+  "longSize": "1080 × 5760",
+  "heroes": [
+    {
+      "title": "木纹外观桌面雾化器",
+      "file": "hero-1.jpg"
+    },
+    {
+      "title": "看得见的外观细节",
+      "file": "hero-2.jpg"
+    },
+    {
+      "title": "桌面摆放灵感",
+      "file": "hero-3.jpg"
+    }
+  ],
+  "details": [
+    {
+      "title": "外观特征，逐处看清",
+      "file": "detail-1.jpg"
+    },
+    {
+      "title": "规格与操作信息",
+      "file": "detail-2.jpg"
+    },
+    {
+      "title": "融入日常桌面布置",
+      "file": "detail-3.jpg"
+    },
+    {
+      "title": "了解商品信息后再选购",
+      "file": "detail-4.jpg"
+    }
+  ],
+  "supplementalProvenance": [
+    "model_estimate"
+  ],
+  "setReview": {
+    "passed": true,
+    "issues": []
+  }
+}

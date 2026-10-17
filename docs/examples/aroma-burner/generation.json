@@ -1,0 +1,79 @@
+{
+  "name": "香薰炉",
+  "collectedOn": "2026-10-17",
+  "lastRunUpdatedAt": "2026-10-17T02:39:23.583Z",
+  "workflowVersion": 4,
+  "status": "PARTIAL",
+  "models": {
+    "planning": "gpt-6-luna",
+    "image": "gpt-image-2.5-flare"
+  },
+  "quality": "auto",
+  "heroCount": 4,
+  "detailCount": 6,
+  "longSize": "1080 × 8640",
+  "heroes": [
+    {
+      "title": "香薰炉｜棕白双色",
+      "file": "hero-1.jpg"
+    },
+    {
+      "title": "上下分区，一眼看清",
+      "file": "hero-2.jpg"
+    },
+    {
+      "title": "为茶席添一处暖色",
+      "file": "hero-3.jpg"
+    },
+    {
+      "title": "一件器具，结构分明",
+      "file": "hero-4.jpg"
+    }
+  ],
+  "details": [
+    {
+      "title": "茶席旁，留一处静坐布置",
+      "file": "detail-1.jpg"
+    },
+    {
+      "title": "从结构看使用方式",
+      "file": "detail-2.jpg"
+    },
+    {
+      "title": "三种桌面布置参考",
+      "file": "detail-3.jpg"
+    },
+    {
+      "title": "四处结构细节，逐一看清",
+      "file": "detail-4.jpg"
+    },
+    {
+      "title": "规格与适配信息",
+      "file": "detail-5.jpg"
+    },
+    {
+      "title": "使用步骤与选购参考",
+      "file": "detail-6.jpg"
+    }
+  ],
+  "supplementalProvenance": [
+    "model_estimate"
+  ],
+  "setReview": {
+    "passed": false,
+    "issues": [
+      {
+        "sectionIndexes": [
+          4
+        ],
+        "message": "画面出现“摆放与使用前，请先确认桌面空间适合放置点燃的茶蜡。”这是未确认的安全注意事项，与本次设计不写入未确认安全信息的要求不符，请移除或替换为已确认内容。"
+      },
+      {
+        "sectionIndexes": [
+          6
+        ],
+        "message": "餐桌布置文案中的“按已确认方式使用”“不将摆放氛围延伸为未经证实的功能承诺”属于编辑过程说明，直接展示给消费者不自然且影响信息表达；请改为简洁的实际摆放与使用描述。"
+      }
+    ]
+  }
+}

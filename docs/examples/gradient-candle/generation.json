@@ -1,0 +1,79 @@
+{
+  "name": "渐变色杯装蜡烛",
+  "collectedOn": "2026-10-17",
+  "lastRunUpdatedAt": "2026-10-17T02:50:37.170Z",
+  "workflowVersion": 4,
+  "status": "PARTIAL",
+  "models": {
+    "planning": "gpt-6-luna",
+    "image": "gpt-image-2.5-flare"
+  },
+  "quality": "auto",
+  "heroCount": 4,
+  "detailCount": 6,
+  "longSize": "1080 × 8640",
+  "heroes": [
+    {
+      "title": "渐变色杯装蜡烛",
+      "file": "hero-1.jpg"
+    },
+    {
+      "title": "一杯渐变好氛围",
+      "file": "hero-2.jpg"
+    },
+    {
+      "title": "花香调杯装蜡烛",
+      "file": "hero-3.jpg"
+    },
+    {
+      "title": "渐变烛光礼盒",
+      "file": "hero-4.jpg"
+    }
+  ],
+  "details": [
+    {
+      "title": "让日常角落多一处柔和氛围",
+      "file": "detail-1.jpg"
+    },
+    {
+      "title": "外观、香型与包装特点",
+      "file": "detail-2.jpg"
+    },
+    {
+      "title": "看见渐变杯身与烛芯细节",
+      "file": "detail-3.jpg"
+    },
+    {
+      "title": "三种居家布置灵感",
+      "file": "detail-4.jpg"
+    },
+    {
+      "title": "商品参数与包装清单",
+      "file": "detail-5.jpg"
+    },
+    {
+      "title": "为日常氛围挑选一杯渐变",
+      "file": "detail-6.jpg"
+    }
+  ],
+  "supplementalProvenance": [
+    "model_estimate"
+  ],
+  "setReview": {
+    "passed": false,
+    "issues": [
+      {
+        "sectionIndexes": [
+          5
+        ],
+        "message": "画面加入了带“Scent Candle”字样的礼盒实物及包装外观，属于未确认的品牌与包装设计信息；请改为不带字样的示意图或移除该包装实物。"
+      },
+      {
+        "sectionIndexes": [
+          8
+        ],
+        "message": "尺寸示意标注“高10 cm”“直径8 cm”未保留“约”，呈现为精确尺寸；请在标注中补回“约”。"
+      }
+    ]
+  }
+}

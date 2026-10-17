@@ -38,8 +38,14 @@
 - [Billing](https://github.com/ziguishian/MxPage/blob/main/docs/api-billing.md)
 - [Task queue](https://github.com/ziguishian/MxPage/blob/main/docs/global-task-queue.md)
 - [Examples](https://github.com/ziguishian/MxPage/blob/main/docs/examples/README.md)
+- [Current homepage and result-editor screenshots](https://github.com/ziguishian/MxPage/blob/main/docs/screenshots/README.md)
+- [Latest local candle case](https://github.com/ziguishian/MxPage/blob/main/docs/examples/gradient-candle/README.md)
+- [Latest local aroma-burner case](https://github.com/ziguishian/MxPage/blob/main/docs/examples/aroma-burner/README.md)
+- [Latest local diffuser case](https://github.com/ziguishian/MxPage/blob/main/docs/examples/wood-diffuser/README.md)
 - [Configuration](https://github.com/ziguishian/MxPage/blob/main/.env.example)
 - [Native release workflow](https://github.com/ziguishian/MxPage/blob/main/.github/workflows/desktop-release.yml)
 - [MIT license](https://github.com/ziguishian/MxPage/blob/main/LICENSE)
 
-This is the editable index. scripts/sync-public-docs.cjs copies it to public/llms.txt. Older design notes and v0.2.0 screenshots are historical. Public homepage indexing is opt-in via NEXT_PUBLIC_SITE_URL; private workspace routes are excluded from sitemap/indexing.
+Current screenshots were captured on 2026-10-17 from v0.3.0. The curated gallery contains six real sets with source photos, hero images, detail panels and full stitched pages. Latest candle/burner/diffuser requests used auto quality; earlier tea/mug studies used low. All use recorded gpt-6-luna / gpt-image-2.5-flare IDs. PARTIAL review status and selected-estimate provenance are documented; examples are not guarantees or measured product specifications. Database files, credentials and request logs are not part of the gallery.
+
+This is the editable index. scripts/sync-public-docs.cjs copies it to public/llms.txt. Older design notes and root-level v0.2.0 screenshots are historical. Public homepage indexing is opt-in via NEXT_PUBLIC_SITE_URL; private workspace routes are excluded from sitemap/indexing.
