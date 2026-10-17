@@ -3,6 +3,13 @@ export function isStyleReference(asset: { metadata?: unknown }) {
   return (asset.metadata as { purpose?: string } | null)?.purpose === "style_reference";
 }
 
+export function workflowReferenceAssets<T extends { type: string; metadata?: unknown }>(assets: T[]) {
+  return {
+    product: assets.filter(asset => ["MAIN", "ANGLE", "DETAIL", "REFERENCE"].includes(asset.type) && !isStyleReference(asset)).slice(0, 8),
+    style: assets.filter(asset => asset.type === "REFERENCE" && isStyleReference(asset)).slice(0, 2),
+  };
+}
+
 export function creativePreferences(snapshot: Record<string, any> = {}) {
   const suggested = snapshot.creationBrief?.recommendedVisualDirection || snapshot.creationBrief?.visualDirection || "";
   if (snapshot.creativePreferences?.version === 2) return {

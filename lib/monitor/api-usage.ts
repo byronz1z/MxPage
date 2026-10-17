@@ -2,6 +2,10 @@ import fs from "fs/promises";
 import path from "path";
 
 import { env } from "@/lib/utils/env";
+import { approximateTextTokens, calculateBilling, nonnegative, readBillingRequest, readBillingUsage, readProviderCostUsd, type BillingRecord, type BillingRequest, type BillingUsage } from "./billing";
+import { getBillingRules } from "./billing-settings";
+import { buildUsageCharts } from "./usage-charts";
+import { getRequestProviderCredentials, providerCredentialFingerprint } from "@/lib/services/provider-runtime";
 
 export type ApiUsageCategory =
   | "models"
@@ -13,6 +17,7 @@ export type ApiUsageCategory =
   | "unknown";
 
 export interface ApiUsageEntry {
+  credentialFingerprint?: string;
   id: string;
   timestamp: string;
   providerBaseUrl: string;
@@ -34,6 +39,11 @@ export interface ApiUsageEntry {
   completionTokens: number | null;
   totalTokens: number | null;
   actualCostUsd: number | null;
+  billing?: BillingRecord;
+  billingUsage?: BillingUsage;
+  billingRequest?: BillingRequest;
+  outputTextTokens?: number;
+  outputImageCount?: number;
   attemptCount: number;
   retrySummary: string | null;
   collapsedAttempts: Array<{
@@ -235,48 +245,16 @@ async function ensureMonitorDir() {
   await fs.mkdir(monitorDir(), { recursive: true });
 }
 
-function toNumberOrNull(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
 function extractUsage(payload: any) {
-  if (!payload || typeof payload !== "object") {
-    return {
-      promptTokens: null,
-      completionTokens: null,
-      totalTokens: null,
-      actualCostUsd: null,
-    };
-  }
-
-  const usage = payload.usage ?? payload.usageMetadata ?? payload.usage_metadata ?? null;
-  const promptTokens =
-    toNumberOrNull(usage?.prompt_tokens) ??
-    toNumberOrNull(usage?.input_tokens) ??
-    toNumberOrNull(usage?.promptTokenCount) ??
-    toNumberOrNull(usage?.inputTokenCount);
-  const completionTokens =
-    toNumberOrNull(usage?.completion_tokens) ??
-    toNumberOrNull(usage?.output_tokens) ??
-    toNumberOrNull(usage?.candidatesTokenCount) ??
-    toNumberOrNull(usage?.outputTokenCount);
-  const totalTokens =
-    toNumberOrNull(usage?.total_tokens) ??
-    toNumberOrNull(usage?.totalTokenCount) ??
-    (promptTokens !== null || completionTokens !== null
-      ? (promptTokens ?? 0) + (completionTokens ?? 0)
-      : null);
-  const actualCostUsd =
-    toNumberOrNull(payload.cost) ??
-    toNumberOrNull(payload.total_cost) ??
-    toNumberOrNull(payload.usage?.cost) ??
-    toNumberOrNull(payload.usage?.total_cost);
+  const usage = readBillingUsage(payload);
+  const actualCostUsd = readProviderCostUsd(payload);
 
   return {
-    promptTokens,
-    completionTokens,
-    totalTokens,
+    promptTokens: usage.input,
+    completionTokens: usage.output,
+    totalTokens: usage.total,
     actualCostUsd,
+    billingUsage: usage,
   };
 }
 
@@ -335,6 +313,7 @@ export async function logApiUsage(params: {
   requestBytes: number;
   responseBytes: number;
   responseBody: string;
+  requestBody?: unknown;
   attemptCount?: number;
   retrySummary?: string | null;
   collapsedAttempts?: Array<{
@@ -375,12 +354,18 @@ export async function logApiUsage(params: {
     completionTokens: usage.completionTokens,
     totalTokens: usage.totalTokens,
     actualCostUsd: usage.actualCostUsd,
+    billingUsage: usage.billingUsage,
+    billingRequest: { ...readBillingRequest(params.requestBody), ...(parsedPayload?.service_tier ? { serviceTier: parsedPayload.service_tier } : {}) },
+    ...(typeof parsedPayload?.choices?.[0]?.message?.content === "string" ? { outputTextTokens: approximateTextTokens(parsedPayload.choices[0].message.content) } : {}),
+    ...(Array.isArray(parsedPayload?.data) ? { outputImageCount: parsedPayload.data.filter((image: any) => image?.url || image?.b64_json).length } : {}),
     attemptCount: params.attemptCount ?? 1,
     retrySummary: params.retrySummary ?? null,
     collapsedAttempts: params.collapsedAttempts ?? [],
-    quotaState: classifyQuotaState(params.statusCode, params.responseBody),
+    quotaState: params.success ? "ok" : classifyQuotaState(params.statusCode, params.responseBody),
+    credentialFingerprint: providerCredentialFingerprint(getRequestProviderCredentials().apiKey),
     errorMessage: params.errorMessage ?? null,
   };
+  entry.billing = calculateBilling(entry, await getBillingRules());
 
   await ensureMonitorDir();
   await fs.appendFile(usageLogPath(), `${JSON.stringify(entry)}\n`, "utf8");
@@ -391,7 +376,7 @@ export async function logApiUsage(params: {
       : entry.category === "image_generation" || entry.category === "image_edit" || entry.category === "google_generate_content"
         ? "tokens=n/a"
         : "tokens=unknown";
-  const costText = entry.actualCostUsd !== null ? `cost=$${entry.actualCostUsd.toFixed(6)}` : "cost=n/a";
+  const costText = entry.billing.costUsd !== null ? `cost=$${entry.billing.costUsd.toFixed(6)} (${entry.billing.source})` : "cost=n/a";
   const modelText = entry.model ?? "unknown-model";
   const statusText = `${entry.success ? "OK" : "FAIL"} ${entry.statusCode}`;
 
@@ -408,7 +393,7 @@ export async function logApiUsage(params: {
 
 export async function listApiUsageEntries(limit = 100) {
   try {
-    const raw = await fs.readFile(usageLogPath(), "utf8");
+    const [raw, rules] = await Promise.all([fs.readFile(usageLogPath(), "utf8"), getBillingRules()]);
     const lines = raw
       .split(/\r?\n/)
       .map((line) => line.trim())
@@ -417,7 +402,8 @@ export async function listApiUsageEntries(limit = 100) {
     return lines
       .slice(-limit)
       .reverse()
-      .map((line) => {
+      .flatMap((line) => {
+        try {
         const entry = JSON.parse(line) as Partial<ApiUsageEntry>;
         const normalizedEntry = {
           finalEndpoint: entry.finalEndpoint ?? entry.endpoint ?? null,
@@ -425,8 +411,16 @@ export async function listApiUsageEntries(limit = 100) {
           retrySummary: entry.retrySummary ?? null,
           collapsedAttempts: entry.collapsedAttempts ?? [],
           ...entry,
+          actualCostUsd: nonnegative(entry.actualCostUsd),
+          // A successful model response may discuss billing/quotas without being an API error.
+          quotaState: entry.success ? "ok" : entry.quotaState ?? "other_error",
         } as ApiUsageEntry;
-        return humanizeEntry(normalizedEntry);
+        if (!normalizedEntry.billing || normalizedEntry.actualCostUsd !== null) {
+          normalizedEntry.billing = calculateBilling(normalizedEntry, rules);
+          if (normalizedEntry.actualCostUsd === null && normalizedEntry.billing.costUsd !== null) normalizedEntry.billing.notes.unshift("历史补估：按当前计费规则计算，原始记录保留。");
+        }
+        return [humanizeEntry(normalizedEntry)];
+        } catch { return []; } // Ignore a partial trailing write without hiding valid records.
       });
   } catch {
     return [];
@@ -490,10 +484,13 @@ export async function getApiUsageSummary(options?: {
   const hours = options?.hours ?? 24;
   const limit = options?.limit ?? 50;
   const page = Math.max(1, options?.page ?? 1);
-  const entries = await listApiUsageEntries(Math.max(limit, 500));
-  const since = Date.now() - hours * 60 * 60 * 1000;
+  // Totals cover the whole filtered time window, not only the latest 500 rows.
+  const entries = await listApiUsageEntries(Number.MAX_SAFE_INTEGER);
+  const until = Date.now();
+  const since = until - hours * 60 * 60 * 1000;
   const filtered = entries.filter((entry) => {
-    if (new Date(entry.timestamp).getTime() < since) {
+    const timestamp = new Date(entry.timestamp).getTime();
+    if (!Number.isFinite(timestamp) || timestamp < since || timestamp > until) {
       return false;
     }
     if (options?.projectId && entry.projectId !== options.projectId) {
@@ -532,6 +529,7 @@ export async function getApiUsageSummary(options?: {
   });
 
   const summary = {
+    charts: buildUsageCharts(filtered, since, until),
     hours,
     page,
     pageSize: limit,
@@ -551,6 +549,10 @@ export async function getApiUsageSummary(options?: {
     totalTokens: filtered.reduce((sum, entry) => sum + (entry.totalTokens ?? 0), 0),
     actualCostUsd: filtered.reduce((sum, entry) => sum + (entry.actualCostUsd ?? 0), 0),
     costSamples: filtered.filter((entry) => entry.actualCostUsd !== null).length,
+    recordedCostUsd: filtered.reduce((sum, entry) => sum + (entry.billing?.costUsd ?? 0), 0),
+    estimatedCostUsd: filtered.reduce((sum, entry) => sum + (entry.billing?.source !== "provider" ? entry.billing?.costUsd ?? 0 : 0), 0),
+    estimatedCostSamples: filtered.filter(entry => entry.billing?.source === "tokens" || entry.billing?.source === "approximation").length,
+    unknownCostSamples: filtered.filter(entry => entry.billing?.costUsd == null).length,
     averageDurationMs:
       filtered.length > 0 ? Math.round(filtered.reduce((sum, entry) => sum + entry.durationMs, 0) / filtered.length) : 0,
     topModels: Object.entries(

@@ -7,12 +7,7 @@ import { Loader2, UploadCloud, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { fileToBase64Payload } from "@/lib/utils/base64-upload";
-
-async function payload(response: Response) {
-  const value = await response.json();
-  if (!value.success) throw new Error(value.error?.message || "请求失败");
-  return value.data;
-}
+import { ApiRequestError, readApiResponse as payload, requestErrorMessage } from "@/lib/utils/request-error";
 
 export function QuickStartWorkspace() {
   const router = useRouter();
@@ -20,6 +15,9 @@ export function QuickStartWorkspace() {
   const [previews, setPreviews] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState("");
+  const [error, setError] = useState("");
+  const [uncertain, setUncertain] = useState(false);
+  const [retryUncertain, setRetryUncertain] = useState(false);
   const [projectId, setProjectId] = useState<string>();
   const pending = useRef(false);
   const uploaded = useRef(0);
@@ -100,9 +98,19 @@ export function QuickStartWorkspace() {
         uploaded.current = index + 1;
       }
 
+      setStage("初步识别商品…");
+      await payload(await fetch(`/api/projects/${project.id}/brief`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ initialOnly: true, retryUncertain }),
+      }));
+
       router.push(`/projects/${project.id}/configure`);
-    } catch (error) { toast.error(error instanceof Error ? error.message : "创建失败"); }
-    finally { pending.current = false; setBusy(false); setStage(""); }
+    } catch (error) {
+      const message = requestErrorMessage(error); setError(message); toast.error(message);
+      setUncertain(error instanceof ApiRequestError ? error.code === "BRIEF_UNCERTAIN" : true);
+    }
+    finally { pending.current = false; setBusy(false); setStage(""); setRetryUncertain(false); }
   }
   return <div className="mx-auto max-w-4xl space-y-8 py-6">
     <div><p className="text-sm text-muted-foreground">MxPage · 一键详情页</p><h1 className="mt-3 text-3xl font-semibold tracking-tight md:text-4xl">上传商品，交给 AI 完成整套详情页</h1><p className="mt-4 leading-7 text-muted-foreground">自动理解商品、设计整套风格、生成并检查图片。完成后直接修改和下载。</p></div>
@@ -129,6 +137,8 @@ export function QuickStartWorkspace() {
 
     </fieldset>
     <div className="space-y-3">
+      {error && <p role="alert" className="text-sm text-muted-foreground">{error}</p>}
+      {uncertain && <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={retryUncertain} onChange={e => setRetryUncertain(e.target.checked)}/>重新请求结果不确定的分析，可能产生额外费用（已保存结果会复用）</label>}
       <Button className="h-12 w-full text-base" disabled={!files.length || busy} onClick={start}>{busy && <Loader2 className="mr-2 h-4 w-4 animate-spin"/>}{busy ? stage : "下一步 · AI 分析商品"}</Button>
       <p className="text-center text-xs text-muted-foreground">下一页确认平台、画质和创作方向后，再开始出图。</p>
       <p className="text-center text-sm text-muted-foreground">首次使用请先完成 <Link href="/settings/providers" className="underline">AI 配置</Link></p>

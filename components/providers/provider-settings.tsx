@@ -5,7 +5,7 @@ import { Select } from "@/components/ui/select";
 
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { AlertTriangle, ChevronsUpDown, CopyPlus, History, Loader2, LockKeyhole, PlugZap, Trash2 } from "lucide-react";
+import { AlertTriangle, ChevronsUpDown, CopyPlus, History, ImagePlus, Loader2, LockKeyhole, PlugZap, ScanEye, TextCursorInput, Trash2, WandSparkles, type LucideIcon } from "lucide-react";
 
 import { CLIENT_PROVIDER_STORAGE_KEY } from "@/components/layout/provider-credential-fetch-bridge";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 
 type ProviderModelRecord = {
   modelId: string;
@@ -68,11 +69,38 @@ type DefaultAssignments = {
 type ModelTypeKey = "text" | "vision" | "image_gen" | "image_edit";
 type GenericModelRecord = ProviderModelRecord | Record<string, any>;
 
-const modelTypeFields: Array<{ key: ModelTypeKey; label: string }> = [
-  { key: "text", label: "文本生成模型" },
-  { key: "vision", label: "图像识别模型" },
-  { key: "image_gen", label: "图像生成模型" },
-  { key: "image_edit", label: "图像编辑模型" },
+const modelTypeFields: Array<{
+  key: ModelTypeKey;
+  label: string;
+  icon: LucideIcon;
+  panelClassName: string;
+  labelClassName: string;
+  badgeClassName: string;
+}> = [
+  {
+    key: "text", label: "文本生成模型", icon: TextCursorInput,
+    panelClassName: "border-blue-200 bg-blue-50/60 dark:border-blue-400/30 dark:bg-blue-400/5",
+    labelClassName: "text-blue-800 dark:text-blue-200",
+    badgeClassName: "border-blue-200 bg-blue-100/70 text-blue-800 dark:border-blue-400/25 dark:bg-blue-400/10 dark:text-blue-200",
+  },
+  {
+    key: "vision", label: "图像识别模型", icon: ScanEye,
+    panelClassName: "border-violet-200 bg-violet-50/60 dark:border-violet-400/30 dark:bg-violet-400/5",
+    labelClassName: "text-violet-800 dark:text-violet-200",
+    badgeClassName: "border-violet-200 bg-violet-100/70 text-violet-800 dark:border-violet-400/25 dark:bg-violet-400/10 dark:text-violet-200",
+  },
+  {
+    key: "image_gen", label: "图像生成模型", icon: ImagePlus,
+    panelClassName: "border-amber-200 bg-amber-50/60 dark:border-amber-400/30 dark:bg-amber-400/5",
+    labelClassName: "text-amber-800 dark:text-amber-200",
+    badgeClassName: "border-amber-200 bg-amber-100/70 text-amber-800 dark:border-amber-400/25 dark:bg-amber-400/10 dark:text-amber-200",
+  },
+  {
+    key: "image_edit", label: "图像编辑模型", icon: WandSparkles,
+    panelClassName: "border-teal-200 bg-teal-50/60 dark:border-teal-400/30 dark:bg-teal-400/5",
+    labelClassName: "text-teal-800 dark:text-teal-200",
+    badgeClassName: "border-teal-200 bg-teal-100/70 text-teal-800 dark:border-teal-400/25 dark:bg-teal-400/10 dark:text-teal-200",
+  },
 ];
 
 const preferredGptTextModelIds = [
@@ -157,8 +185,8 @@ function scoreModelForType(model: GenericModelRecord, typeKey: ModelTypeKey) {
   let score = 0;
   const text = getModelText(model);
   if ((typeKey === "text" || typeKey === "vision") && model.modelId === "gpt-6-luna") score += 1000;
-  if ((typeKey === "image_gen" || typeKey === "image_edit") && model.modelId === "gpt-image-2.5-sunburst") score += 1000;
-  if ((typeKey === "image_gen" || typeKey === "image_edit") && model.modelId === "gpt-image-2.5-flare") score += 900;
+  if ((typeKey === "image_gen" || typeKey === "image_edit") && model.modelId === "gpt-image-2.5-flare") score += 1000;
+  if ((typeKey === "image_gen" || typeKey === "image_edit") && model.modelId === "gpt-image-2.5-sunburst") score += 900;
   if ((typeKey === "text" || typeKey === "vision") && isPreferredGptTextModel(model)) score += 100;
   if ((typeKey === "image_gen" || typeKey === "image_edit") && isPreferredGptImage2(model)) score += 100;
   if (/gpt/i.test(text)) score += 20;
@@ -269,6 +297,7 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
     [providers, selectedProviderId, activeProvider],
   );
   const [loading, setLoading] = useState<null | "configure" | "saveAsNew" | "activate" | "delete">(null);
+  const [probe, setProbe] = useState<{ status: "running" | "success" | "error"; message: string; endpoint?: string } | null>(null);
   const [deleteTargetId, setDeleteTargetId] = useState("");
   const [models, setModels] = useState<Array<GenericModelRecord>>(selectedProvider?.models ?? []);
   const [defaults, setDefaults] = useState<DefaultAssignments>(buildDefaults(selectedProvider ?? null));
@@ -315,6 +344,7 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
   );
 
   function updateForm(patch: Partial<typeof form>) {
+    setProbe(null);
     setForm((current) => ({ ...current, ...patch }));
   }
 
@@ -335,6 +365,7 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
   }
 
   function hydrateFromProviderPayload(data: any, nextSelectedId?: string | null) {
+    window.dispatchEvent(new Event("mxpage:provider-updated"));
     const nextProviders: ProviderRecord[] = Array.isArray(data) ? data : data?.providers ?? [];
     setProviders(nextProviders);
     const fallbackId = nextSelectedId ?? nextProviders.find((item) => item.isActive)?.id ?? nextProviders[0]?.id ?? "";
@@ -380,16 +411,6 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
     }
   }
 
-  async function testProviderConnection(values: ProviderSubmitValues) {
-    const response = await fetch("/api/providers/test", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(values),
-    });
-    const payload = await response.json();
-    if (!payload.success) throw new Error(payload.error?.message ?? "连接测试失败");
-  }
-
   async function discoverProviderModels(values: ProviderSubmitValues) {
     const response = await fetch("/api/providers/discover-models", {
       method: "POST",
@@ -397,7 +418,7 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
       body: JSON.stringify(values),
     });
     const payload = await response.json();
-    if (!payload.success) throw new Error(payload.error?.message ?? "模型发现失败");
+    if (!response.ok || !payload.success) throw new Error(payload.error?.message ?? "模型发现失败");
 
     const discoveredModels = payload.data.models ?? [];
     const recommendedDefaults = payload.data.recommendations ?? buildRecommendedDefaults(discoveredModels);
@@ -416,7 +437,7 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
       }),
     });
     const payload = await response.json();
-    if (!payload.success) throw new Error(payload.error?.message ?? "配置保存失败");
+    if (!response.ok || !payload.success) throw new Error(payload.error?.message ?? "配置保存失败");
 
     const savedProviderId = payload.data?.savedProviderId ?? values.id ?? "";
     hydrateFromProviderPayload(payload.data, savedProviderId);
@@ -424,9 +445,11 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
 
   async function handleOneClickConfigure() {
     setLoading("configure");
+    setProbe({ status: "running", message: "正在连接服务并探测模型…" });
+    let saved = false;
+    let endpoint: string | undefined;
     try {
       const values = persistCurrentCredentials();
-      await testProviderConnection(values);
       const { discoveredModels, recommendedDefaults } = await discoverProviderModels(values);
       // Refresh the catalogue without replacing the user's explicit choices.
       const sameService = values.baseUrl.replace(/\/+$/, "") === selectedProvider?.baseUrl.replace(/\/+$/, "");
@@ -436,10 +459,21 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
       }
       setModels(discoveredModels);
       setDefaults(nextDefaults);
+      setProbe({ status: "running", message: `已发现 ${discoveredModels.length} 个模型，正在保存配置…` });
       await persistProviderConfig(values, true, discoveredModels, nextDefaults);
-      toast.success(`一键配置完成：已连接服务、识别 ${discoveredModels.length} 个模型并保存配置`);
+      saved = true;
+      setProbe({ status: "running", message: "配置已保存，正在验证规划模型连接…" });
+      const response = await fetch("/api/providers/agent-compatibility", { method: "POST" });
+      const payload = await response.json().catch(() => { throw new Error(`本地检测接口返回异常响应（HTTP ${response.status}），请刷新页面后重试。`); });
+      endpoint = payload.data?.endpoint || payload.error?.details?.endpoint;
+      if (!response.ok || !payload.success) throw new Error(payload.error?.message || "模型连接检测失败");
+      setProbe({ status: "success", message: `探测通过：已发现 ${discoveredModels.length} 个模型并保存配置；${payload.data.modelId} · ${payload.data.transport}`, endpoint });
+      window.dispatchEvent(new Event("mxpage:provider-updated"));
+      toast.success("探测通过，配置已保存");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "一键配置失败");
+      const message = `${saved ? "配置已保存，但模型连接检测未通过：" : "探测或保存失败："}${error instanceof Error ? error.message : "请稍后重试"}`;
+      setProbe({ status: "error", message, endpoint });
+      toast.error(message);
     } finally {
       setLoading(null);
     }
@@ -466,7 +500,7 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
 
   return (
     <>
-    <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+    <div className="grid grid-cols-1 gap-6">
       <Card>
         <CardHeader>
           <CardTitle>模型服务连接</CardTitle>
@@ -495,7 +529,8 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
                   <Select
                     id="provider-history"
                     value={selectedProviderId}
-                    onValueChange={(value) => setSelectedProviderId(value)}
+                    disabled={loading !== null}
+                    onValueChange={(value) => { setProbe(null); setSelectedProviderId(value); }}
                   >
                     {providers.length === 0 ? <option value="">暂无已保存服务</option> : null}
                     {providers.map((provider) => (
@@ -547,17 +582,17 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
           <form autoComplete="off" className="grid gap-4 md:grid-cols-2" onSubmit={(event) => event.preventDefault()}>
             <div className="space-y-2 md:col-span-2">
               <Label htmlFor="provider-name">服务名称</Label>
-              <Input id="provider-name" autoComplete="off" value={form.name} onChange={(event) => updateForm({ name: event.target.value })} placeholder="默认 GPT 模型服务" />
+              <Input id="provider-name" disabled={loading !== null} autoComplete="off" value={form.name} onChange={(event) => updateForm({ name: event.target.value })} placeholder="默认 GPT 模型服务" />
             </div>
             {!baseUrlLocked ? (
               <div className="space-y-2 md:col-span-2">
                 <Label htmlFor="provider-base-url">baseURL</Label>
-                <Input id="provider-base-url" inputMode="url" autoComplete="off" autoCapitalize="none" value={form.baseUrl} onChange={(event) => updateForm({ baseUrl: event.target.value })} placeholder="https://your-provider.example/v1" />
+                <Input id="provider-base-url" disabled={loading !== null} inputMode="url" autoComplete="off" autoCapitalize="none" value={form.baseUrl} onChange={(event) => updateForm({ baseUrl: event.target.value })} placeholder="https://your-provider.example/v1" />
               </div>
             ) : null}
             <div className="space-y-2 md:col-span-2">
               <Label htmlFor="provider-api-key">API Key</Label>
-              <Input id="provider-api-key" type="password" autoComplete="new-password" value={form.apiKey} onChange={(event) => updateForm({ apiKey: event.target.value })} placeholder="请输入当前浏览器使用的 API Key" />
+              <Input id="provider-api-key" disabled={loading !== null} type="password" autoComplete="new-password" value={form.apiKey} onChange={(event) => updateForm({ apiKey: event.target.value })} placeholder="请输入当前浏览器使用的 API Key" />
               <p className="text-xs text-muted-foreground">API Key 会写入浏览器 localStorage，不会保存到服务器数据库。不同设备需要分别配置。</p>
             </div>
           </form>
@@ -567,14 +602,18 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
               <div className="space-y-1">
                 <p className="text-sm font-medium">一键配置模型服务</p>
                 <p className="text-xs leading-6 text-muted-foreground">
-                  系统会自动完成本地保存凭证、测试连接、发现模型、识别能力并保存当前服务配置。
+                  一次完成模型发现、能力识别、配置保存和规划模型连接验证。连接验证仅发送一次轻量结构化请求，不生成图片。
                 </p>
               </div>
               <Button type="button" onClick={handleOneClickConfigure} disabled={loading !== null || !form.apiKey.trim()} className="h-11 shrink-0 gap-2 px-5">
                 {loading === "configure" ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlugZap className="h-4 w-4" />}
-                {loading === "configure" ? "正在一键配置..." : selectedProvider ? "一键测试、探测并保存" : "一键配置"}
+                {loading === "configure" ? "正在探测…" : "探测并保存"}
               </Button>
             </div>
+            {probe && <div role="status" aria-live="polite" className={cn("space-y-1 rounded-xl border p-3 text-sm", probe.status === "error" ? "border-destructive/30 text-destructive" : probe.status === "success" ? "border-emerald-500/30 text-emerald-700 dark:text-emerald-300" : "text-muted-foreground")}>
+              <p>{probe.message}</p>
+              {probe.endpoint && <p className="break-all text-xs text-muted-foreground">请求地址：{probe.endpoint}</p>}
+            </div>}
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/70 pt-3">
               <p className="text-xs text-muted-foreground">需要保留当前历史服务时，可先一键配置确认模型，再另存为新服务。</p>
               <Button type="button" variant="outline" onClick={saveProviderAsNew} disabled={loading !== null || models.length === 0 || !form.apiKey.trim()}>
@@ -591,17 +630,21 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
                   <h3 className="font-medium">默认模型类型分配</h3>
                   <Badge>{models.length} 个模型</Badge>
                 </div>
-                <Button type="button" variant="outline" size="sm" onClick={handleAutoFillDefaults}>按 GPT 优先自动填充</Button>
+                <Button type="button" variant="outline" size="sm" disabled={loading !== null} onClick={() => { setProbe(null); handleAutoFillDefaults(); }}>按 GPT 优先自动填充</Button>
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">
                 {modelTypeFields.map((field) => {
                   const options = getModelsForType(models, field.key);
                   const selectedValue = getTypeDefaultValue(defaults, field.key);
+                  const Icon = field.icon;
                   return (
-                    <div key={field.key} className="space-y-2">
-                      <Label>{field.label}</Label>
-                      <Select aria-label={field.label} value={selectedValue} disabled={options.length === 0} onValueChange={(value) => setDefaults((current) => setTypeDefaultValue(current, field.key, value))}>
+                    <div key={field.key} className={cn("min-w-0 space-y-3 rounded-2xl border p-4", field.panelClassName)}>
+                      <Label htmlFor={`default-model-${field.key}`} className={cn("flex items-center gap-2", field.labelClassName)}>
+                        <Icon aria-hidden="true" className="h-4 w-4 shrink-0" />
+                        {field.label}
+                      </Label>
+                      <Select id={`default-model-${field.key}`} aria-label={field.label} value={selectedValue} disabled={loading !== null || options.length === 0} onValueChange={(value) => { setProbe(null); setDefaults((current) => setTypeDefaultValue(current, field.key, value)); }}>
                         <option value="">{options.length === 0 ? "暂无此类型模型" : "未选择"}</option>
                         {options.map((model) => (
                           <option key={`${field.key}-${model.modelId}`} value={model.modelId}>{model.label}</option>
@@ -629,17 +672,21 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
               {capabilityGroups.map((group) => {
                 const visibleModels = group.models.slice(0, 18);
                 const hiddenCount = Math.max(0, group.models.length - visibleModels.length);
+                const Icon = group.icon;
                 return (
-                  <div key={group.key} className="rounded-3xl border border-border p-4">
+                  <div key={group.key} className={cn("min-w-0 rounded-3xl border p-4", group.panelClassName)}>
                     <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="font-medium">{group.label}</h3>
-                      <Badge variant="outline">{group.models.length} 个模型</Badge>
+                      <h3 className={cn("flex items-center gap-2 font-medium", group.labelClassName)}>
+                        <Icon aria-hidden="true" className="h-4 w-4 shrink-0" />
+                        {group.label}
+                      </h3>
+                      <Badge variant="outline" className={group.badgeClassName}>{group.models.length} 个模型</Badge>
                     </div>
                     <div className="mt-4 flex flex-wrap gap-2">
                       {visibleModels.map((model) => (
-                        <Badge key={`${group.key}-${model.modelId}`} variant="outline" className="max-w-full truncate">{model.label}</Badge>
+                        <Badge key={`${group.key}-${model.modelId}`} variant="outline" className={cn("max-w-full truncate", group.badgeClassName)}>{model.label}</Badge>
                       ))}
-                      {hiddenCount > 0 ? <Badge>+ {hiddenCount} 个</Badge> : null}
+                      {hiddenCount > 0 ? <Badge className={group.badgeClassName}>+ {hiddenCount} 个</Badge> : null}
                     </div>
                   </div>
                 );

@@ -4,9 +4,10 @@ import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import { ProviderSettings } from "@/components/providers/provider-settings";
-import { AgentCompatibility } from "@/components/providers/agent-compatibility";
 import { PageHeader } from "@/components/shared/page-header";
 import { Card, CardContent } from "@/components/ui/card";
+import { GptImageEstimator } from "@/components/providers/gpt-image-estimator";
+import type { BillingRules } from "@/lib/monitor/billing";
 
 type ProviderPageData = Array<{
   id: string;
@@ -54,7 +55,7 @@ function LoadingState() {
   );
 }
 
-export default function ProviderSettingsPageClient() {
+export default function ProviderSettingsPageClient({ billingRules }: { billingRules: BillingRules }) {
   const [mounted, setMounted] = useState(false);
   const [providers, setProviders] = useState<ProviderPageData>([]);
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig>({
@@ -126,7 +127,6 @@ export default function ProviderSettingsPageClient() {
         description="页面展示已保存的 Provider 与模型快照。API Key 仅保存在当前浏览器；私有化部署可通过 LOCK_BASE_URL 锁定统一 API 通道。"
       />
 
-      <AgentCompatibility />
       {loading ? (
         <LoadingState />
       ) : error ? (
@@ -139,6 +139,7 @@ export default function ProviderSettingsPageClient() {
       ) : (
         <ProviderSettings initialProviders={providers} runtimeConfig={runtimeConfig} />
       )}
+      <GptImageEstimator models={providers.flatMap((provider) => provider.models)} billingRules={billingRules} />
     </div>
   );
 }

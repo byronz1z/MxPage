@@ -404,6 +404,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
           requestBytes,
           responseBytes: Buffer.byteLength(body),
           responseBody: body,
+          requestBody: init?.body,
           errorMessage: response.ok ? null : body.slice(0, 1000),
         });
       }
@@ -428,6 +429,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
           requestBytes,
           responseBytes: 0,
           responseBody: "",
+          requestBody: init?.body,
           errorMessage: error instanceof Error ? error.message : "Unknown request failure",
         });
       }
@@ -453,10 +455,11 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     monitor?: AiMonitorContext,
     options?: {
       suppressUsageLog?: boolean;
+      singleAttempt?: boolean;
     },
   ) {
     const urls = this.buildRequestUrls(path);
-    if (urls.length === 1 || options?.suppressUsageLog) {
+    if (urls.length === 1 || options?.suppressUsageLog || options?.singleAttempt) {
       const response = await this.fetchRaw(urls[0], init, undefined, timeoutMs, monitor, options);
       this.rememberCompatibleBaseUrl(urls[0], path, response);
       return response;
@@ -552,6 +555,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       requestBytes,
       responseBytes: Buffer.byteLength(finalResponse.body),
       responseBody: finalResponse.body,
+      requestBody: init?.body,
       attemptCount: collapsedAttempts.length,
       retrySummary,
       collapsedAttempts,
@@ -1068,8 +1072,13 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     model: string;
     prompt: string;
     images: string[];
+    quality?: "auto" | "low" | "medium" | "high" | "xhigh" | "max";
     size?: string;
     aspectRatio?: "1:1" | "3:4" | "9:16";
+    background?: "auto" | "opaque" | "transparent";
+    outputFormat?: "png" | "jpeg" | "webp";
+    outputCompression?: number;
+    moderation?: "auto" | "low";
     timeoutMs?: number;
     monitor?: AiMonitorContext;
     signal?: AbortSignal;
@@ -1078,6 +1087,11 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       model: input.model,
       prompt: input.prompt,
       size: resolveOpenAiSize(input),
+      ...(input.quality ? { quality: input.quality } : {}),
+      ...(input.background && input.background !== "auto" ? { background: input.background } : {}),
+      ...(input.outputFormat ? { output_format: input.outputFormat } : {}),
+      ...(typeof input.outputCompression === "number" && input.outputFormat !== "png" ? { output_compression: input.outputCompression } : {}),
+      ...(input.moderation ? { moderation: input.moderation } : {}),
     };
     const errors: string[] = [];
 
@@ -1101,17 +1115,29 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     throw new Error(`GPT Image multipart request failed: ${errors.join(" | ")}`);
   }
 
-  // Agent runs own the retry budget: exactly one image request, never a protocol/model retry.
-  async generateAgentImage(input: ImageGenerationRequest): Promise<ImageGenerationResult> {
+  // The caller owns retries; never repeat an uncertain paid request or switch models.
+  async generateImageOnce(input: ImageGenerationRequest): Promise<ImageGenerationResult> {
     const form = new FormData();
     form.append("quality", input.quality ?? "auto");
     form.append("model", input.model);
     form.append("prompt", input.prompt);
     form.append("size", resolveOpenAiSize(input));
+    if (input.background && input.background !== "auto") form.append("background", input.background);
+    if (input.outputFormat) form.append("output_format", input.outputFormat);
+    if (typeof input.outputCompression === "number" && input.outputFormat !== "png") form.append("output_compression", String(input.outputCompression));
+    if (input.moderation) form.append("moderation", input.moderation);
     const images = input.referenceImages ?? [];
     images.forEach((image, index) => form.append(images.length > 1 ? "image[]" : "image", dataUrlToBlob(image), `reference-${index}.png`));
-    const endpoint = `${this.baseUrl.replace(/\/$/, "")}/images/${images.length ? "edits" : "generations"}`;
-    const response = await this.fetchRaw(endpoint, images.length ? { method: "POST", body: form } : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: input.model, prompt: input.prompt, quality: input.quality ?? "auto", size: resolveOpenAiSize(input), n: 1 }) }, undefined, input.timeoutMs ?? 180000, input.monitor);
+    const path = `/images/${images.length ? "edits" : "generations"}`;
+    const request = images.length
+      ? { method: "POST", body: form, signal: input.signal }
+      : {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: input.model, prompt: input.prompt, quality: input.quality ?? "auto", size: resolveOpenAiSize(input), n: 1, ...(input.background && input.background !== "auto" ? { background: input.background } : {}), ...(input.outputFormat ? { output_format: input.outputFormat } : {}), ...(typeof input.outputCompression === "number" && input.outputFormat !== "png" ? { output_compression: input.outputCompression } : {}), ...(input.moderation ? { moderation: input.moderation } : {}) }),
+          signal: input.signal,
+        };
+    const response = await this.requestRaw(path, request, input.timeoutMs ?? 180000, input.monitor, { singleAttempt: true });
     if (!response.ok) throw new Error(`Image request failed (${response.status}). Check API monitor; explicitly retry if needed.`);
     return extractImageResult(JSON.parse(response.body));
   }
@@ -1279,6 +1305,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
           model: input.model,
           prompt: input.prompt,
           images: [input.image, ...(input.referenceImages ?? [])],
+          quality: input.quality,
           size: input.size,
           aspectRatio: input.aspectRatio,
           timeoutMs: input.timeoutMs,
@@ -1297,6 +1324,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
           model: input.model,
           prompt: input.prompt,
           size: resolveOpenAiSize(input),
+          ...(input.quality ? { quality: input.quality } : {}),
           images: imageRefs,
           ...(input.mask ? { mask: toMaskRef(input.mask) } : {}),
         },
@@ -1307,6 +1335,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
           model: input.model,
           prompt: input.prompt,
           size: resolveOpenAiSize(input),
+          ...(input.quality ? { quality: input.quality } : {}),
           images: imageRefs,
           input_fidelity: "high",
           ...(input.mask ? { mask: toMaskRef(input.mask) } : {}),
@@ -1318,6 +1347,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
           model: input.model,
           prompt: input.prompt,
           size: resolveOpenAiSize(input),
+          ...(input.quality ? { quality: input.quality } : {}),
           reference_images: imageRefs,
           ...(input.mask ? { mask: toMaskRef(input.mask) } : {}),
         },

@@ -91,7 +91,7 @@ export async function saveGeneratedImage(params: {
   } else if (params.source.b64Json) {
     await fs.writeFile(absolutePath, Buffer.from(params.source.b64Json, "base64"));
   } else if (params.source.url) {
-    const response = await fetch(params.source.url);
+    const response = await fetch(params.source.url, { signal: AbortSignal.timeout(45000) });
     if (!response.ok) {
       throw new Error(`Failed to download generated image: ${response.status}`);
     }

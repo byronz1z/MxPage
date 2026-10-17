@@ -1,4 +1,5 @@
 "use client";
+import { ImageGenerationLoading } from "@/components/shared/image-generation-loading";
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -122,11 +123,13 @@ function EmptyState({ message, actionHref, actionLabel }: { message: string; act
 }
 
 function XiaohongshuAppPreview({
+  generating = false,
   plan,
   selectedIndex,
   imageUrl,
   imageAspectRatio = defaultXiaohongshuConfig.imageAspectRatio,
 }: {
+  generating?: boolean;
   plan: XiaohongshuPlan | null;
   selectedIndex: number;
   imageUrl?: string | null;
@@ -140,6 +143,7 @@ function XiaohongshuAppPreview({
   const authorName = "子圭时安";
 
   function renderArtwork(compact = false) {
+    if (generating) return <ImageGenerationLoading className="h-full" label={imageUrl ? "正在更新图片" : "正在生成图片"}/>;
     if (imageUrl) {
       return <img src={imageUrl} alt={page?.title ?? "小红书图文"} className="h-full w-full object-cover" />;
     }
@@ -802,6 +806,7 @@ export function XiaohongshuGenerateStep() {
           </CardHeader>
           <CardContent className="space-y-4">
             <XiaohongshuAppPreview
+              generating={loading && loadingPage === draft.plan.pages[selectedIndex]?.pageNumber}
               plan={draft.plan}
               selectedIndex={selectedIndex}
               imageUrl={selectedImage?.imageUrl}
@@ -945,6 +950,7 @@ export function XiaohongshuEditStep() {
           </CardHeader>
           <CardContent className="space-y-4">
             <XiaohongshuAppPreview
+              generating={loading}
               plan={draft.plan}
               selectedIndex={selectedIndex}
               imageUrl={selectedImage?.imageUrl}

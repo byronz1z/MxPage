@@ -12,6 +12,8 @@
 
 # testing
 /coverage
+/test-output/
+/public/test-reports/
 
 # next.js
 /.next/
@@ -53,6 +55,9 @@ next-env.d.ts
 # local data
 /storage/
 /prisma/dev.db
+*.db-wal
+*.db-shm
+*.db-journal
 
 # Local acceptance evidence and throwaway helpers (curated examples live in docs/examples)
 /ui-review/

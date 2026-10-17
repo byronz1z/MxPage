@@ -41,7 +41,12 @@ export interface TextRequest {
 }
 
 export interface ImageGenerationRequest {
-  quality?: "auto" | "low" | "medium" | "high";
+  quality?: "auto" | "low" | "medium" | "high" | "xhigh" | "max";
+  background?: "auto" | "opaque" | "transparent";
+  outputFormat?: "png" | "jpeg" | "webp";
+  outputCompression?: number;
+  moderation?: "auto" | "low";
+  partialImages?: number;
   model: string;
   prompt: string;
   size?: string;
@@ -53,6 +58,7 @@ export interface ImageGenerationRequest {
 }
 
 export interface ImageEditRequest {
+  quality?: "auto" | "low" | "medium" | "high" | "xhigh" | "max";
   model: string;
   prompt: string;
   image: string;

@@ -1,0 +1,53 @@
+import fs from "node:fs/promises";
+import { createWriteStream } from "node:fs";
+import path from "node:path";
+import sharp from "sharp";
+import archiver from "archiver";
+
+const config = JSON.parse(await fs.readFile(process.argv[2], "utf8"));
+const root = path.resolve(config.outputRoot), dir = path.join(root, "round-1");
+const { project, run } = JSON.parse(await fs.readFile(path.join(dir, "project.json"), "utf8"));
+const notes = JSON.parse(await fs.readFile(path.join(root, "review-notes.json"), "utf8"));
+if (["PENDING", "RUNNING", "WAITING_INPUT"].includes(run.status)) throw new Error("Wait for the test to finish");
+if (run.input.planningModelId !== "gpt-6-luna" || run.input.imageModelId !== "gpt-image-2.5-flare" || run.input.quality !== "low") throw new Error("Unexpected model or quality");
+const expected = 3 + config.detailCount;
+if (project.sections.length !== expected || project.sections.some(section => !section.imageUrl) || Object.values(run.checkpoint.attempts).reduce((a, b) => a + b, 0) !== expected) throw new Error("Missing output or repeated image generation");
+if (project.sections.some(section => section.visualPrompt !== section.currentImageAsset?.metadata?.prompt)) throw new Error("Generated image did not use the final storyboard");
+const long = await sharp(path.join(dir, "detail-long.png")).metadata();
+const generationPrompts = project.sections.map(section => ({ title: section.title, type: section.type, copy: section.copy, prompt: section.visualPrompt }));
+await fs.writeFile(path.join(dir, "generation-prompts.json"), JSON.stringify(generationPrompts, null, 2));
+const usage = (await fs.readFile("storage/monitor/api-usage.jsonl", "utf8")).trim().split(/\r?\n/).map(line => JSON.parse(line)).filter(item => item.projectId === project.id).map(item => ({ operation: item.operation, model: item.model, success: item.success, durationMs: item.durationMs, error: item.errorMessage, attemptCount: item.attemptCount }));
+await fs.writeFile(path.join(root, "request-evidence.json"), JSON.stringify(usage, null, 2));
+const record = { name: config.name, projectId: project.id, runId: run.id, status: run.status, models: { recognition: project.modelSnapshot?.creationBrief?.recognition?.modelId, planning: run.input.planningModelId, image: run.input.imageModelId, quality: run.input.quality }, generatedImages: expected, longSize: `${long.width} × ${long.height}`, coverage: run.checkpoint.plan.contentCoverage, missingFields: run.checkpoint.plan.missingFields, imageReviews: run.checkpoint.imageReviews, setReview: run.checkpoint.setReview, lastError: run.checkpoint.lastError, timings: run.checkpoint.timings, notes };
+await fs.writeFile(path.join(root, "test-record.json"), JSON.stringify(record, null, 2));
+await fs.copyFile(config.sourceImage, path.join(root, "source.jpg"));
+const strips = await Promise.all([1, 2, 3].map(async (n, i) => ({ input: await sharp(path.join(dir, `hero-${n}.png`)).resize(600, 600).png().toBuffer(), left: i * 612, top: 0 })));
+await sharp({ create: { width: 1824, height: 600, channels: 3, background: "#e8ddca" } }).composite(strips).png().toFile(path.join(root, "hero-set.png"));
+const esc = value => String(value ?? "").replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]));
+const labels = { need: "需求与日常", selling_points: "卖点解释", scenarios: "生活场景", details: "局部细节", specifications: "已知商品信息", trust: "真实保障", usage: "使用与护理", closing: "购买收口" };
+const detailSections = project.sections.filter(section => section.type !== "HERO");
+const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(config.name)}</title>
+<style>*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#eee8dd;color:#30271d;font:16px/1.7 system-ui,"Microsoft YaHei",sans-serif}header,main{max-width:1440px;margin:auto;padding:32px}header{display:flex;gap:28px;align-items:center}header img{width:144px;height:144px;object-fit:cover;border-radius:14px}h1{font:500 39px/1.3 Georgia,"Songti SC",serif;margin:10px 0}h2{font-size:23px;margin:0 0 16px}p{margin:9px 0}.eyebrow{font-size:12px;letter-spacing:.16em;color:#896729}.muted{font-size:14px;color:#807364}nav{position:sticky;top:0;z-index:2;display:flex;gap:10px;flex-wrap:wrap;justify-content:center;background:#eee8ddf5;padding:15px;border-block:1px solid #d9cbb8}button,.button{font:inherit;border:1px solid #c7b297;background:#fffaf1;color:#614c32;border-radius:999px;padding:10px 18px;cursor:pointer;text-decoration:none}.active,.primary{background:#5b4226;color:#fffaf1}.panel{background:#fffcf7;border:1px solid #ddcfba;padding:24px;border-radius:18px;margin-bottom:24px}.hero-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}.card{background:#fffcf7;border:1px solid #d6c5ad;border-radius:14px;overflow:hidden}.card img{width:100%;display:block;height:auto}.card p{padding:0 16px;font-size:14px}.long-view{display:none;max-width:810px;margin:auto}.long-view img{display:block;width:100%;height:auto}body.details .hero-grid{display:none}body.details .long-view{display:block}.chapter-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}.chapter-grid img{width:100%;display:block;border-radius:10px}.chapter-grid p{font-size:14px}a{color:#82571f}table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:12px;border-bottom:1px solid #e2d6c4;text-align:left;vertical-align:top}summary{cursor:pointer;font-weight:600}details{padding:14px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.7 system-ui}footer{text-align:center;padding:30px;color:#88765f}.stats{display:flex;flex-wrap:wrap;gap:12px;margin:15px 0}.stats span{padding:5px 12px;border:1px solid #cfb993;border-radius:99px;font-size:13px}@media(max-width:760px){header,main{padding:18px}header img{width:82px;height:82px}h1{font-size:26px}.hero-grid{grid-template-columns:1fr}.chapter-grid{grid-template-columns:repeat(2,1fr)}.panel{padding:16px;overflow:auto}}</style>
+<header><img src="source.jpg" alt="用户提供的原始茶器照片"><div><div class="eyebrow">MXPAGE / REAL PRODUCT TEST</div><h1>金棕入席，细看一器</h1><p>带盖茶器完整详情实测 · 3张头图 + ${config.detailCount}屏详情</p><p class="muted">规划与质检：gpt-6-luna　｜　图片：gpt-image-2.5-flare　｜　质量 low</p></div></header>
+<nav><button id="hero" class="active">查看三张头图</button><button id="detail">查看完整长图</button><a class="button primary" href="round-1/detail-long.png" download>下载长图 ${record.longSize}</a><a class="button" href="product-test.zip" download>全部原图 ZIP</a><a class="button" href="/projects/${project.id}/editor">打开应用项目</a></nav>
+<main><section class="panel"><h2>这轮的实际结果</h2><p>${esc(notes.summary)}</p><div class="stats"><span>${expected}/${expected}张图片已生成</span><span>单张仅生成1次</span><span>${esc(run.status)}</span><span>长图 ${record.longSize}</span></div><p class="muted">${esc(notes.execution)}</p></section>
+<section class="hero-grid">${project.sections.filter(section => section.type === "HERO").map((section, i) => `<article class="card"><a href="round-1/hero-${i + 1}.png" target="_blank"><img src="round-1/hero-${i + 1}.png" alt="${esc(section.title)}"></a><p><strong>头图 ${i + 1}</strong> · ${esc(section.title)}</p><p><a href="round-1/hero-${i + 1}.png" download>下载原图</a></p></article>`).join("")}</section>
+<section class="long-view"><a href="round-1/detail-long.png" target="_blank"><img src="round-1/detail-long.png" alt="8屏完整详情页长图"></a></section>
+<section class="panel" style="margin-top:24px"><h2>完整详情 · 逐屏查看</h2><div class="chapter-grid">${detailSections.map((section, i) => `<a href="round-1/detail-${i + 1}.png" target="_blank"><img loading="lazy" src="round-1/detail-${i + 1}.png" alt="${esc(section.title)}"><p>${i + 1}. ${esc(section.title)}</p></a>`).join("")}</div></section>
+<section class="panel"><h2>实际看图记录</h2>${notes.pages.map(item => `<p><strong>${esc(item.page)}：</strong>${esc(item.observation)}</p>`).join("")}<p>${esc(notes.limitations)}</p></section>
+<section class="panel"><h2>内容覆盖与资料缺口</h2><table><thead><tr><th>内容</th><th>规划状态</th><th>依据或缺口</th></tr></thead><tbody>${record.coverage.map(item => `<tr><th>${labels[item.module]}</th><td>${item.status === "covered" ? "已安排" : "缺少资料"}</td><td>${esc(item.reason)}</td></tr>`).join("")}</tbody></table><p class="muted">覆盖清单记录规划内容；实际图像问题以实看与质检记录为准。没有提供的容量、材质、尺寸与保障不会作为卖点编入画面。</p><details><summary>查看逐屏文案与缺失资料</summary>${project.sections.map((section, i) => `<h3>${i + 1}. ${esc(section.title)}</h3><pre>${esc(section.copy)}</pre>`).join("")}<pre>${esc(record.missingFields.map(field => field.question).join("\n"))}</pre></details><details><summary>查看本轮完整创作指令</summary><pre>${esc(await fs.readFile(path.join(dir, "prompt.txt"), "utf8"))}</pre></details><p><a href="test-record.json" download>测试记录</a> · <a href="request-evidence.json" download>模型请求记录</a> · <a href="round-1/generation-prompts.json" download>实际分镜提示词</a></p></section></main><footer>原图来自用户提供的 ${esc(path.basename(config.sourceImage))}。图片为应用直接输出，导出仅做等比缩放与拼接。</footer><script>const hero=document.querySelector('#hero'),detail=document.querySelector('#detail');hero.onclick=()=>{document.body.classList.remove('details');hero.classList.add('active');detail.classList.remove('active')};detail.onclick=()=>{document.body.classList.add('details');detail.classList.add('active');hero.classList.remove('active')};</script></html>`;
+await fs.writeFile(path.join(root, "index.html"), html, "utf8");
+const topFiles = ["index.html", "source.jpg", "hero-set.png", "test-record.json", "request-evidence.json", "review-notes.json"];
+const imageFiles = ["hero.png", "hero-1.png", "hero-2.png", "hero-3.png", "detail-long.png", "prompt.txt", "generation-prompts.json", ...detailSections.map((_, i) => `detail-${i + 1}.png`)];
+await new Promise((resolve, reject) => {
+  const stream = createWriteStream(path.join(root, "product-test.zip")), archive = archiver("zip", { zlib: { level: 5 } });
+  stream.on("close", resolve); stream.on("error", reject); archive.on("error", reject); archive.pipe(stream);
+  for (const file of topFiles) archive.file(path.join(root, file), { name: file });
+  for (const file of imageFiles) archive.file(path.join(dir, file), { name: `round-1/${file}` });
+  archive.finalize();
+});
+const publicRoot = path.resolve("public/test-reports", path.basename(root));
+await fs.mkdir(path.join(publicRoot, "round-1"), { recursive: true });
+for (const file of [...topFiles, "product-test.zip"]) await fs.copyFile(path.join(root, file), path.join(publicRoot, file));
+for (const file of imageFiles) await fs.copyFile(path.join(dir, file), path.join(publicRoot, "round-1", file));
+console.log(JSON.stringify({ root, publicRoot, images: expected, size: record.longSize, status: run.status }));

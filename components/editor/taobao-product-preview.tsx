@@ -2,10 +2,11 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { BatteryFull, ChevronLeft, ChevronRight, Headphones, MoreHorizontal, Share2, ShoppingCart, Signal, Star, Store, Wifi, X } from "lucide-react";
-import { ProductImage, imageReview, type PreviewSection } from "./product-phone-preview";
+import { ChevronLeft, ChevronRight, Headphones, MoreHorizontal, Share2, ShoppingCart, Star, Store, X } from "lucide-react";
+import { HeroCarouselImages, ProductImage, imageReview, type PreviewSection } from "./product-phone-preview";
 import type { ImageProgress } from "@/lib/detail-runs/contracts";
-const styles = {"device":"mx-taobao-device","screen":"mx-taobao-screen","status":"mx-taobao-status","solid":"mx-taobao-solid","navigation":"mx-taobao-navigation","overlay":"mx-taobao-overlay","tabs":"mx-taobao-tabs","viewport":"mx-taobao-viewport","gallery":"mx-taobao-gallery","emptyHero":"mx-taobao-emptyHero","counter":"mx-taobao-counter","productInfo":"mx-taobao-productInfo","price":"mx-taobao-price","priceMissing":"mx-taobao-priceMissing","titleRow":"mx-taobao-titleRow","meta":"mx-taobao-meta","group":"mx-taobao-group","row":"mx-taobao-row","sectionHeading":"mx-taobao-sectionHeading","empty":"mx-taobao-empty","shop":"mx-taobao-shop","shopLogo":"mx-taobao-shopLogo","shopName":"mx-taobao-shopName","shopScores":"mx-taobao-shopScores","detailSection":"mx-taobao-detailSection","recommendations":"mx-taobao-recommendations","footer":"mx-taobao-footer","purchaseBar":"mx-taobao-purchaseBar","buyButtons":"mx-taobao-buyButtons","homeIndicator":"mx-taobao-homeIndicator","sheetOverlay":"mx-taobao-sheetOverlay","sheet":"mx-taobao-sheet","sheetClose":"mx-taobao-sheetClose","sheetConfirm":"mx-taobao-sheetConfirm"};
+import { IPhoneStatusBar } from "./iphone-status-bar";
+const styles = {"screen":"mx-taobao-screen","status":"mx-taobao-status","solid":"mx-taobao-solid","navigation":"mx-taobao-navigation","overlay":"mx-taobao-overlay","tabs":"mx-taobao-tabs","viewport":"mx-taobao-viewport","gallery":"mx-taobao-gallery","emptyHero":"mx-taobao-emptyHero","counter":"mx-taobao-counter","productInfo":"mx-taobao-productInfo","price":"mx-taobao-price","priceMissing":"mx-taobao-priceMissing","titleRow":"mx-taobao-titleRow","meta":"mx-taobao-meta","group":"mx-taobao-group","row":"mx-taobao-row","sectionHeading":"mx-taobao-sectionHeading","empty":"mx-taobao-empty","shop":"mx-taobao-shop","shopLogo":"mx-taobao-shopLogo","shopName":"mx-taobao-shopName","shopScores":"mx-taobao-shopScores","detailSection":"mx-taobao-detailSection","recommendations":"mx-taobao-recommendations","footer":"mx-taobao-footer","purchaseBar":"mx-taobao-purchaseBar","buyButtons":"mx-taobao-buyButtons","homeIndicator":"mx-taobao-homeIndicator","sheetOverlay":"mx-taobao-sheetOverlay","sheet":"mx-taobao-sheet","sheetClose":"mx-taobao-sheetClose","sheetConfirm":"mx-taobao-sheetConfirm"};
 
 export type ListingPreview = Partial<Record<"price" | "shipping" | "sales" | "origin" | "shopName" | "service" | "promotion" | "coupon" | "options" | "parameters", string>>;
 export const listingFields: [keyof ListingPreview, string][] = [["price", "售价（元）"], ["shipping", "运费说明"], ["sales", "销量说明"], ["origin", "发货地"], ["shopName", "店铺名称"], ["service", "服务说明"], ["promotion", "促销说明"], ["coupon", "优惠券说明"], ["options", "规格选项"], ["parameters", "商品参数"]];
@@ -40,7 +41,10 @@ export function TaobaoProductPreview({ name, sections, progress, listing = {}, o
   const hero = heroes[index];
   useEffect(() => {
     if (!device.current) return;
-    const observer = new ResizeObserver(([entry]) => setScale(entry.contentRect.width / 375));
+    // The supplied mockup has a transparent screen cutout inside its 968px
+    // canvas. Scale the 375×812 preview to that cutout instead of the outer
+    // phone bounds, otherwise the page bleeds into the bezel.
+    const observer = new ResizeObserver(([entry]) => setScale((entry.contentRect.width * 830 / 968) / 375));
     observer.observe(device.current);
     return () => observer.disconnect();
   }, []);
@@ -52,7 +56,7 @@ export function TaobaoProductPreview({ name, sections, progress, listing = {}, o
   function jump(label: string, target?: HTMLElement | null) {
     const el = viewport.current;
     if (!el) return;
-    el.scrollTo({ top: target ? target.offsetTop - 88 : 0, behavior: "auto" });
+    el.scrollTo({ top: target ? target.offsetTop - 98 : 0, behavior: "auto" });
     setTab(label);
   }
   function trackScroll() {
@@ -65,9 +69,10 @@ export function TaobaoProductPreview({ name, sections, progress, listing = {}, o
   const sheetText: Record<string, string> = { 领券: listing.coupon || "未提供优惠券信息", 促销: listing.promotion || "未提供促销信息", 服务: listing.service || "未提供服务信息", 选择: listing.options || "未提供规格选项", 参数: listing.parameters || "未提供商品参数", 购物车: "这是页面预览，不会加入真实购物车。", 立即购买: "这是页面预览，不会创建订单或付款。", 客服: "预览模式未接入店铺客服。", 评价: "尚未导入真实买家评价。", 买家相册: "尚未导入买家图片。", 问大家: "尚未导入真实问答。", 店铺: listing.shopName || "尚未填写店铺名称。", 分享: "商品尚未发布，暂无线上商品链接。", 更多: "可以切换头图、滚动查看详情，或点击图片查看原图。" };
   return <section aria-label="手机商品页预览" className="rounded-2xl border bg-muted/20 p-3 sm:p-6">
     <div className="mb-5 flex flex-wrap items-center justify-between gap-2"><h2 className="font-medium">淘宝移动端预览</h2><span className="text-xs text-muted-foreground">参照所提供的淘宝界面 · 375 × 812</span></div>
-    <div className={styles.device} ref={device}>
+    <div className="mx-phone-device" ref={device}>
+      <div className="mx-phone-screenShell" data-testid="taobao-screen-shell">
       <div className={styles.screen} style={{ transform: `scale(${scale})` }} data-testid="taobao-screen">
-        <div aria-hidden="true" className={`${styles.status} ${scrollTop > 240 ? styles.solid : ""}`}><span>9:41</span><span><Signal size={17}/><Wifi size={17}/><BatteryFull size={23}/></span></div>
+        <IPhoneStatusBar className={`${styles.status} ${scrollTop > 240 ? styles.solid : ""}`}/>
         <nav aria-label="商品页导航" className={`${styles.navigation} ${scrollTop > 240 ? styles.solid : styles.overlay}`}>
           <button type="button" aria-label="返回商品顶部" onClick={() => jump("宝贝")}><ChevronLeft size={24}/></button>
           <div className={styles.tabs} style={{ visibility: scrollTop > 240 ? "visible" : "hidden" }}>{Object.entries(targets).map(([label, ref]) => <button type="button" key={label} aria-current={tab === label ? "location" : undefined} onClick={() => jump(label, ref?.current)}>{label}</button>)}</div>
@@ -75,7 +80,7 @@ export function TaobaoProductPreview({ name, sections, progress, listing = {}, o
         </nav>
         <div ref={viewport} role="region" aria-label="手机页面内容，可滚动" tabIndex={0} onScroll={trackScroll} className={styles.viewport}>
           <section aria-label="手机头图轮播" className={styles.gallery} onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); nextHero(e.key === "ArrowLeft" ? -1 : 1); } }} onTouchStart={e => { touchX.current = e.touches[0].clientX; }} onTouchEnd={e => { const delta = e.changedTouches[0].clientX - touchX.current; if (Math.abs(delta) > 40) nextHero(delta < 0 ? 1 : -1); }}>
-            {hero ? <button type="button" aria-label={`查看头图：${hero.title}`} onClick={() => { onSelect(hero.id); onExpand(hero.id); }}><ProductImage key={hero.id} section={hero} progress={progress} square/></button> : <div className={styles.emptyHero}>头图生成后显示在这里</div>}
+            {hero ? <HeroCarouselImages heroes={heroes} index={index} progress={progress} onActivate={id => { onSelect(id); onExpand(id); }}/> : <div className={styles.emptyHero}>头图生成后显示在这里</div>}
             {heroes.length > 1 && <>
               <button type="button" className="mx-taobao-galleryArrow mx-taobao-galleryPrevious" aria-label="上一张头图" title="上一张头图" onClick={() => nextHero(-1)}><ChevronLeft size={22} aria-hidden="true"/></button>
               <button type="button" className="mx-taobao-galleryArrow mx-taobao-galleryNext" aria-label="下一张头图" title="下一张头图" onClick={() => nextHero(1)}><ChevronRight size={22} aria-hidden="true"/></button>
@@ -111,6 +116,8 @@ export function TaobaoProductPreview({ name, sections, progress, listing = {}, o
         <div ref={setSheetHost}/>
         <Dialog.Root open={Boolean(sheet)} onOpenChange={open => { if (!open) setSheet(null); }}>{sheetHost && <Dialog.Portal container={sheetHost}><Dialog.Overlay className={styles.sheetOverlay}/><Dialog.Content onCloseAutoFocus={event => { event.preventDefault(); sheetTrigger.current?.focus(); }} className={styles.sheet}><Dialog.Title>{sheet}</Dialog.Title><Dialog.Description>{sheet ? sheetText[sheet] : ""}</Dialog.Description><Dialog.Close className={styles.sheetClose} aria-label="关闭预览弹层"><X size={20}/></Dialog.Close>{["购物车", "立即购买", "选择"].includes(sheet || "") && <p>{listing.options || "未设置商品规格"}</p>}<Dialog.Close className={styles.sheetConfirm}>完成</Dialog.Close></Dialog.Content></Dialog.Portal>}</Dialog.Root>
       </div>
+      </div>
+        <img src="/assets/phone-mockup-frame.png" alt="" aria-hidden="true" data-testid="phone-mockup-overlay" className="mx-phone-frame" />
     </div>
     <div className="mt-5 flex flex-wrap items-center justify-center gap-2 text-xs"><span className="min-w-20 text-center">头图 {heroes.length ? index + 1 : 0} / {heroes.length}</span><button type="button" onClick={() => jump("宝贝")} className="ml-2 rounded-full border px-3 py-2">商品顶部</button><button type="button" onClick={() => jump("详情", detailStart.current)} className="rounded-full border px-3 py-2">查看详情</button></div>
     <p className="mt-4 text-center text-xs leading-5 text-muted-foreground">滚动或滑动查看，点击图片放大。交易操作仅模拟；未提供的商品信息不编造，手机界面不参与导出。</p>

@@ -1,155 +1,114 @@
-# MxPage — Open-source AI E-commerce Product Image & Detail Page Generator
+# MxPage · AI e-commerce image workspace
 
-**Turn product reference photos into hero images, selling-point visuals, and a complete set of product detail images.**
+[简体中文](README.md) · **English** · [Desktop downloads](https://github.com/ziguishian/MxPage/releases/latest) · [Release notes](docs/releases/v0.3.0.md) · [AI documentation](llms.txt)
 
-MxPage helps e-commerce operators, cross-border sellers, designers, and content creators plan, generate, edit, translate, and export product visuals. It is published and maintained by **Lingju Huijing (灵矩绘境)** under the [MIT license](LICENSE).
+MxPage is an MIT-licensed, locally deployable workspace for product hero images, complete e-commerce detail pages, batch image translation and Xiaohongshu / RED posts. Maintained by **Lingju Huijing (灵矩绘境 / MatrixInspire)**.
 
-[简体中文](README.md) · **English**
+**v0.3.0 replaces the Agent tool loop with a deterministic V4 workflow and individual structured JSON requests through the OpenAI SDK.** Scheduling, checkpoints, layout, retries and recovery are controlled by code. There is no `@openai/agents` dependency.
 
-**[Download for Windows](https://github.com/ziguishian/MxPage/releases/latest) · [See examples](#generated-examples) · [Quick start](#quick-start) · [FAQ](#faq)**
+## Features
 
-## What you can make
+- Evidence-based product planning, buyer needs, selling points, scenarios, confirmed specifications and complete visual storyboards.
+- Category/platform prompts, 3–10 hero images and 4–20 detail images per detail task.
+- Sequential confirmation dialogs: concrete suggested answers plus custom input. Suggestions require selection; unknown dimensions are not silently treated as measured facts.
+- First hero image precedes the rest; image concurrency is capped at two.
+- Phone mockup preview, per-image editing/version history, ZIP and stitched detail-page exports.
+- Independent fixed-prompt translation: single images, folders, multiple languages and source/result comparison. No product-planning Agent.
+- Shared task queue, stage/per-image timing, API cost and stability charts, CNY estimates with editable conversion.
+- Local avatar/profile, rolling 12-month usage heatmap, model settings and appearance.
 
-| Your task | MxPage workflow |
+Presets do not publish to marketplaces. This is an image-production workspace, not a storefront builder. [Examples and provenance](docs/examples/README.md); [historical v0.2.0 screenshots](docs/screenshots/README.md).
+
+## Desktop downloads
+
+Download from [Releases](https://github.com/ziguishian/MxPage/releases/latest):
+
+| Platform | v0.3.0 asset |
 | --- | --- |
-| Create images for a new product listing | Analyze reference photos, derive supported selling points, plan the image sequence, then generate and edit each image |
-| Produce visuals for multiple SKUs | Process product folders in batches with shared platform, language, quality, and image-count settings |
-| Localize existing product images | Upload individual images, multiple images, or a folder and generate translated images |
-| Create Xiaohongshu / RED image posts | Describe the content direction and optionally add reference images |
-| Review and refine a full set | Use phone previews, per-image editing, design feedback, and version history before exporting |
+| Windows x64 | `MxPage-0.3.0-windows-x64.zip` |
+| macOS Apple Silicon | `MxPage-0.3.0-macos-arm64.zip` |
+| macOS Intel | `MxPage-0.3.0-macos-x64.zip` |
 
-Here, a **product detail page** means a set of product images and an optional stitched long image. MxPage does not publish listings to marketplaces or export a complete storefront website.
+Extract the entire ZIP and open `MxPage.exe` or `MxPage.app`. No separate Node.js installation is needed. The Mac app can be moved to Applications. These are installation-free archives; user data stays in the OS data directory rather than beside the executable:
 
-## Product facts
+- Windows: `%APPDATA%/MxPage/`
+- macOS: `~/Library/Application Support/MxPage/`
 
-| Item | Current support |
-| --- | --- |
-| Documented release | [v0.2.0](https://github.com/ziguishian/MxPage/releases/tag/v0.2.0), October 1, 2026 |
-| Installation | Windows x64 installer or a self-hosted Next.js application |
-| Default image counts | 4 hero images + 6 detail images per product |
-| Maximum image counts | 10 hero images + 20 detail images per product |
-| Export | Individual images, image ZIP, and stitched detail-page image |
-| Model connection | Bring your own OpenAI-compatible API key, endpoint, and models |
-| Software license | MIT; model-provider fees and terms apply separately |
-| Interface | Current screenshots show the Chinese interface; output language is configurable |
+Quit and back up that directory before replacing application files. Packages have no commercial signing certificate or Apple notarization; macOS uses ad-hoc signing. The OS may require confirmation of the trusted source. Verify downloads with `SHA256SUMS.txt`.
 
-The v0.2.0 workflow saves checkpoints and drafts. It separates buyer-facing copy from internal visual instructions, plans typography for each image, and uses the previous detail image plus its bottom color strip as references for the next image. Category-specific content includes specifications and, for clothing, on-body views and supplied size information. Generated results still need human review.
+## First run
 
-## Generated examples
+1. Bottom-left avatar menu → API configuration: enter your own compatible endpoint/key.
+2. Discover models and check the connection. The badge shows connection state, image model and last validation time.
+3. This release's detail workflow uses discovered **GPT-6 Luna / GPT Image 2.5 Flare** IDs; dated variants are not substituted automatically. Your gateway must support structured JSON and image generation/editing. Abbreviated model names are not fabricated into IDs.
+4. Upload references and known facts, then confirm supplemental answers.
+5. Start with a small set at low quality and review cost/output before scaling up.
 
-The ceramic mug example contains **4 hero images and 6 detail images generated by the application**. It demonstrates product scenes, close-ups, annotations, and a final product-information section.
+Model credits and fees are separate. Discovering a model does not verify every image parameter supported by a gateway.
 
-![Ceramic mug example: 4 hero images and 6 product detail images generated with MxPage](docs/examples/ceramic-mug/overview.jpg)
+## Workflow and recovery
 
-[Browse the individual images and example provenance](docs/examples/README.md). The skincare image is an application-generated photography example. The durian image is a single prompt-layout design preview, not a complete application-generated set. Examples illustrate actual outputs rather than guaranteed results.
+```text
+PREPARE → PLAN → WAITING_INPUT (if needed) → ART_DIRECTION
+        → GENERATE → IMAGE_REVIEW → SET_REVIEW
+        → COMPLETED / PARTIAL / FAILED
+```
 
-## Interface preview
+Resume reuses completed plans, storyboards, assets and reviews. Request IDs are persisted before dispatch; heartbeat leases guard writes. Stop prevents new dispatches while issued requests drain and retain results.
 
-Current v0.2.0 product workspace, captured on October 1, 2026:
+**Uncertain paid requests are not automatically resent.** Timeouts, disconnects and invalid responses require explicit retry authorization. Review issues retain images rather than triggering paid regeneration. Canonical text comes from `textBlocks[].text`; local code wraps text and preserves known parameters, units and table cells while allowing natural rephrasing.
 
-![MxPage editor with a phone preview, per-image editing, design feedback, and version history](docs/screenshots/editor-phone.jpg)
+Up to 12 images receive one set review; larger sets use overlapping groups. Supplemental requests, manual edits and authorized retries may add calls. Earlier workflow versions remain viewable/exportable and do not enter V4 automatically. [Recovery details](docs/workflow-v4-reliability.md).
 
-[View all five interface screenshots](docs/screenshots/README.md): product upload, batch generation, editing, translation, and Xiaohongshu creation.
+## Source setup
 
-## Quick start
-
-### Windows desktop
-
-1. Open [the latest release](https://github.com/ziguishian/MxPage/releases/latest) and download the Windows installer from **Assets**. The v0.2.0 installer is `mxpage-0.2.0.exe`.
-2. Install and launch MxPage. In **AI 配置** (AI configuration), enter your API key, endpoint, text model, and image model.
-3. Upload reference photos of one product, confirm its facts, and choose the platform, output language, and image counts.
-4. Generate, review, and edit the results, then download an image ZIP or a stitched detail image.
-
-The Windows installer does not require a separate Node.js installation. Start with a small set to confirm provider compatibility and output quality before processing a large batch.
-
-### Run from source
-
-Prerequisites: Git and Node.js. Node.js 24 is recommended for development and automated tests.
+Requires Git, **Node.js 24** and npm.
 
 ```bash
 git clone https://github.com/ziguishian/MxPage.git
 cd MxPage
+npm ci
 ```
 
-Copy `.env.example` to `.env` and replace `APP_SECRET` with your own long random string. Then run:
+Copy `.env.example` to `.env` (`Copy-Item .env.example .env` in PowerShell or `cp .env.example .env` on macOS/Linux), set your own `APP_SECRET`, then:
 
 ```bash
-npm install
 npm run prisma:generate
 npm run prisma:migrate
+npm run docs:sync
 npm run dev
 ```
 
-Open the local URL printed by Next.js, then configure your model provider in the application.
+Open `http://localhost:3000`. Source defaults: `prisma/dev.db` and `storage/`. Production uses `npm run build` then `npm start`; first stop any dev server sharing `.next`. Desktop output uses `.next-desktop` separately.
 
-## Configuration and deployment
+`DATABASE_URL` and `STORAGE_ROOT` configure data paths. `LOCK_BASE_URL` optionally fixes a private gateway. `NEXT_PUBLIC_SITE_URL` enables public homepage canonical metadata and sitemap; leave unset locally. Workspace pages remain `noindex`. Robots directives are not access control: add authentication, TLS and isolation before publicly exposing this personal workspace.
 
-```env
-DATABASE_URL="file:./dev.db"
-APP_SECRET="replace-with-your-own-long-secret"
-STORAGE_ROOT="./storage"
-APP_RUNTIME="web"
-NEXT_PUBLIC_APP_NAME="MxPage"
+## Develop and package
 
-# Optional: force server-side model requests through your configured gateway.
-# LOCK_BASE_URL="https://your-private-openai-compatible-gateway/v1"
+```bash
+npm test
+npm run test:detail
+npm run typecheck
+npm run build:desktop
+npm run dist:green       # Windows x64 ZIP on Windows
+npm run dist:mac         # Current native architecture ZIP on macOS
+npm run smoke:desktop   # Packaged SQLite/Prisma/sharp and local HTTP routes
 ```
 
-When `LOCK_BASE_URL` is set, the server uses that endpoint instead of the address entered in the UI. The legacy aliases `FORCED_API_BASE` and `FORCED_API_BASE_URL` are also supported.
+The [release pipeline](.github/workflows/desktop-release.yml) builds and smoke-tests on native Windows, macOS ARM64 and Intel runners before publishing ZIPs and SHA256 sums. Developer data, keys and local test reports are excluded.
 
-MxPage supports OpenAI-compatible providers. The application defaults favor GPT-series text models and `gpt-image-2` for images; actual model availability and supported endpoints depend on your provider. Image generation and editing capabilities must be available for the relevant workflows.
+Stack: Next.js 14, React 18, TypeScript, Prisma/SQLite, OpenAI SDK and Electron. V4 is in `lib/detail-runs/`, translation in `lib/translation/`, usage/billing in `lib/monitor/`, desktop startup in `desktop/`.
 
-The stack is Next.js, React, TypeScript, Prisma/SQLite, and Electron. Desktop startup code is in `desktop/`; the Windows package shares the same application as the web version.
+Read [AGENTS.md](AGENTS.md) before code changes. [llms.txt](llms.txt) is the editable product/AI index; `npm run docs:sync` copies it to the app's `/llms.txt`. Older design documents remain historical; current code, tests and V4 documentation take precedence.
 
-| Command | Purpose |
-| --- | --- |
-| `npm run dev` | Start development server |
-| `npm test` | Run automated tests |
-| `npm run build` | Create a production build |
-| `npm run start` | Start the production server |
-| `npm run dist:win` | Build the Windows installer |
-| `npm run dist:mac` | Build macOS ARM64 DMG/ZIP on macOS |
+## Costs and data
 
-See the [v0.2.0 release notes](docs/releases/v0.2.0.md) for changes and validation details.
+- MIT software does not include model credits. Generation, edits, translation and authorized retries may cost money.
+- Monitoring distinguishes returned amounts, usage-based estimates, rough estimates and unpriced records. CNY conversion is configurable, not a live settled bill. [Billing](docs/api-billing.md).
+- API keys stay in the current browser's local storage and request context, not the project database. Desktop and ordinary browser settings are separate.
+- Files can remain local, but inference images/text go to the configured provider. Generation is not fully offline.
+- Review product identity, translations, parameters and claims before publication. Selected simulated suggestions retain provenance and must not be represented as measured/certified facts.
 
-## FAQ
+[Translation](docs/translation-workflow.md) · [Task queue](docs/global-task-queue.md) · [Issues](https://github.com/ziguishian/MxPage/issues) · [MIT license](LICENSE)
 
-### Is MxPage free? Do I need an API key?
-
-The source code is MIT-licensed, and the installer is available from this repository. You supply your own model API key. Text analysis, image generation, edits, translation, and retries may incur provider charges. MxPage does not include free model credits; costs depend on your provider, models, quality, and image counts.
-
-### Does self-hosting mean offline image generation?
-
-The default workflow needs access to the configured model service. Self-hosting keeps the application, database, and generated files on your computer or server. Reference images and prompts used for generation are still sent to your chosen model service or gateway.
-
-### Which marketplaces are supported?
-
-Content presets include general e-commerce, Taobao/Tmall, Pinduoduo, Xiaohongshu, and Douyin e-commerce. These guide content and visual planning; they are not marketplace publishing integrations. Review the target platform's current image requirements before uploading exported assets.
-
-### How many images can I generate?
-
-Each product supports up to 10 hero images and 20 detail images, with a default of 4 + 6. Folder batch mode processes multiple products. Larger sets take longer and require more model calls.
-
-### Can I translate existing product images?
-
-Yes. The translation workflow accepts single images, multiple images, or folders and generates images in selected target languages. Translation uses image models, so product fidelity, specialist terms, and typography need review.
-
-### Where are keys and product data stored?
-
-By default, API keys are stored in the current browser's local storage and sent to the application server when making requests; they are not written to the server database. Desktop data is stored in the system application-data directory. Source deployments use configured database and storage paths. Your selected provider's data-handling terms apply to model requests.
-
-### Can I resume or edit a generation?
-
-The new workflow preserves checkpoints, plan drafts, and completed images. Use **继续未完成部分** (continue unfinished work) to resume, or edit/regenerate an individual image and inspect its history. Provider availability, reference quality, and model behavior affect the result. Human review remains necessary after automated checks.
-
-### Are macOS and Linux installers available?
-
-The v0.2.0 release provides a Windows x64 installer. Other systems can use the source deployment. macOS ARM64 build scripts are included and require macOS, but this release does not include macOS or Linux desktop installers.
-
-## Feedback and contributions
-
-[Search existing issues](https://github.com/ziguishian/MxPage/issues) or [report a bug or request a feature](https://github.com/ziguishian/MxPage/issues/new). Include the version, reproduction steps, expected behavior, and redacted errors. Do not include API keys or private product data.
-
-Code, documentation, and translation improvements are welcome through [pull requests](https://github.com/ziguishian/MxPage/pulls).
-
-[Chinese documentation](README.md) · [Release notes](docs/releases/v0.2.0.md) · [Product facts and documentation index](llms.txt) · [MIT license](LICENSE)
+Copyright © 2026 灵矩绘境 · MxPage / MatrixInspire.

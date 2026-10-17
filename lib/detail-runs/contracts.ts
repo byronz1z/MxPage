@@ -4,10 +4,24 @@ import { contentLanguageOptions } from "@/lib/utils/content-language";
 import type { ArtDirection, ArtReview } from "./art-direction";
 import type { StyleReference } from "./reference-catalog";
 
+const imageSizeSchema = z.string().regex(/^(auto|\d{2,4}x\d{2,4})$/).refine((value) => {
+  if (value === "auto") return true;
+  const [width, height] = value.split("x").map(Number);
+  const long = Math.max(width, height), short = Math.min(width, height);
+  return width % 16 === 0 && height % 16 === 0 && long <= 3840 && short > 0 && long / short <= 3 && width * height >= 655360 && width * height <= 8294400;
+}, "尺寸必须为 16 的倍数，像素数在 655360–8294400 之间，长宽比不超过 3:1");
+
 export const detailRunInputSchema = z.object({
   idempotencyKey: z.string().min(8).max(100),
   language: z.enum(contentLanguageOptions).default("zh-CN"),
-  quality: z.enum(["auto", "low", "medium", "high"]).default("auto"),
+  quality: z.enum(["auto", "low", "medium", "high", "xhigh", "max"]).default("auto"),
+  imageSettings: z.object({
+    size: imageSizeSchema.default("auto"),
+    background: z.enum(["auto", "opaque", "transparent"]).default("auto"),
+    outputFormat: z.enum(["png", "jpeg", "webp"]).default("png"),
+    outputCompression: z.number().int().min(0).max(100).default(100),
+    moderation: z.enum(["auto", "low"]).default("auto"),
+  }).default({ size: "auto", background: "auto", outputFormat: "png", outputCompression: 100, moderation: "auto" }),
   heroCount: z.number().int().min(HERO_MIN).max(HERO_MAX).default(4),
   detailCount: z.number().int().min(DETAIL_MIN).max(DETAIL_MAX).default(6),
   mode: z.enum(["create", "xhs", "edit", "regenerate", "translate"]).default("create"),
@@ -42,6 +56,8 @@ export type ImageProgress = {
   retryRequested?: boolean;
 };
 export type RunCheckpoint = {
+  taskTiming?: import("@/lib/tasks/timing").TaskTiming;
+  contentWarnings?: string[];
   failure?: { code: string; phase: string; message: string; networkCode?: string; fields?: string[]; at: string };
   creativeVersion?: 2 | 3;
   adaptations?: Partial<Record<"heroes" | "details", { status: "claimed" | "applied" | "skipped" | "failed"; reason: string; basis: string[]; sectionIds: string[] }>>;
@@ -62,7 +78,8 @@ export type RunCheckpoint = {
   artDirection?: ArtDirection;
   userVisualDirection?: string;
   images: ImageProgress[];
-  questions?: { text: string; blocking: boolean; requiresImage: boolean }[];
+  questions?: import("./supplemental-input").StoredSupplementalQuestion[];
+  supplementalQuestionIssue?: string;
   answers: string[];
   skippedQuestions?: boolean;
   toolCalls: number;

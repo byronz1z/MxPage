@@ -760,7 +760,6 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
         </CardHeader>
         <CardContent className="min-h-0 flex flex-1 items-stretch justify-center overflow-y-auto overflow-x-hidden">
           <div className="relative flex h-full max-h-full w-[396px] max-w-full flex-col overflow-hidden rounded-[3.2rem] border border-black/70 bg-[radial-gradient(circle_at_top,_#6b7280,_#1f2937_40%,_#030712_100%)] p-[10px] shadow-[0_30px_80px_rgba(15,23,42,0.38)]">
-            <div className="pointer-events-none absolute left-1/2 top-[14px] z-20 h-[34px] w-[132px] -translate-x-1/2 rounded-full bg-black shadow-[0_8px_20px_rgba(0,0,0,0.38)]" />
             <div className="absolute left-[6px] top-[160px] h-[96px] w-[4px] rounded-full bg-white/15" />
             <div className="absolute right-[6px] top-[190px] h-[132px] w-[4px] rounded-full bg-white/15" />
             <div className="relative isolate flex h-full flex-col overflow-hidden rounded-[2.55rem] border border-white/10 bg-[#f7f7f7]">
@@ -921,6 +920,13 @@ export function EditorWorkspace({ project: initialProject }: EditorWorkspaceProp
                 <div className="pb-[max(8px,env(safe-area-inset-bottom))]" />
               </div>
             </div>
+            <img
+              src="/assets/phone-mockup-frame.png"
+              alt=""
+              aria-hidden="true"
+              data-testid="phone-mockup-overlay"
+              className="pointer-events-none absolute inset-0 z-30 h-full w-full object-fill"
+            />
           </div>
         </CardContent>
       </Card>

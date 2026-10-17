@@ -2,6 +2,7 @@ import { Prisma, type GenerationTask, type TaskStatus, type TaskType } from "@pr
 
 import { prisma } from "@/lib/db/prisma";
 import { assertNoDetailRun } from "@/lib/detail-runs/lock";
+import { readTaskTiming, startTiming, touchTiming } from "@/lib/tasks/timing";
 
 export type MxTaskType = TaskType;
 
@@ -23,6 +24,10 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
+function currentTiming(task: GenerationTask | null, finish = false) {
+  return touchTiming(readTaskTiming(asRecord(task?.outputPayload).taskTiming) ?? startTiming(undefined, task?.startedAt?.getTime() ?? Date.now()), finish);
+}
+
 export async function createTask(input: {
   projectId: string;
   sectionId?: string | null;
@@ -41,7 +46,7 @@ export async function createTask(input: {
       status,
       startedAt: status === "RUNNING" ? new Date() : null,
       inputPayload: toJsonValue(input.inputPayload),
-      outputPayload: toJsonValue(input.outputPayload),
+      outputPayload: toJsonValue({ ...asRecord(input.outputPayload), ...(status === "RUNNING" ? { taskTiming: startTiming() } : {}) }),
     },
   });
 }
@@ -83,10 +88,12 @@ export async function startTask(taskId: string, patch?: unknown) {
     where: { id: taskId },
     data: {
       status: "RUNNING",
-      startedAt: current?.startedAt ?? new Date(),
+      startedAt: current?.status === "RUNNING" ? current.startedAt ?? new Date() : new Date(),
+      completedAt: null,
       outputPayload: toJsonValue({
         ...asRecord(current?.outputPayload),
         ...asRecord(patch),
+        taskTiming: current?.status === "RUNNING" ? currentTiming(current) : startTiming(asRecord(current?.outputPayload).taskTiming),
       }),
     },
   });
@@ -104,6 +111,7 @@ export async function updateTaskProgress(taskId: string, patch: Record<string, u
       outputPayload: toJsonValue({
         ...asRecord(current.outputPayload),
         ...patch,
+        taskTiming: currentTiming(current),
         updatedAt: new Date().toISOString(),
       }),
     },
@@ -124,6 +132,7 @@ export async function completeTask(taskId: string, outputPayload?: unknown) {
       outputPayload: toJsonValue({
         ...asRecord(current?.outputPayload),
         ...asRecord(outputPayload),
+        taskTiming: currentTiming(current, true),
         completedAt: new Date().toISOString(),
       }),
     },
@@ -145,6 +154,7 @@ export async function failTask(taskId: string, errorMessage: string, outputPaylo
       outputPayload: toJsonValue({
         ...asRecord(current?.outputPayload),
         ...asRecord(outputPayload),
+        taskTiming: currentTiming(current, true),
         failedAt: new Date().toISOString(),
       }),
     },
@@ -169,6 +179,7 @@ export async function cancelTask(taskId: string) {
       status: "CANCELED",
       completedAt: new Date(),
       errorMessage: "Canceled by user.",
+      outputPayload: toJsonValue({ ...output, taskTiming: currentTiming(task, true) }),
     },
   });
 

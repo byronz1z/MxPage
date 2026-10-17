@@ -19,6 +19,7 @@ import {
   releaseTaskAbortController,
 } from "@/lib/services/task-service";
 import { buildVisualPromptWithAgent } from "@/lib/services/visual-prompt-agent";
+import { buildTranslationPrompt } from "@/lib/translation/prompt";
 import { readStorageFile, saveGeneratedImage } from "@/lib/storage/asset-manager";
 import { normalizeContentLanguage, type ContentLanguage } from "@/lib/utils/content-language";
 import { buildDefaultVisualStyleGuide, readVisualStyleGuide } from "@/lib/utils/visual-style-guide";
@@ -82,10 +83,14 @@ function getGenerationSettings(project: { modelSnapshot: unknown } | null) {
     allowSvgFallback: settings.allowSvgFallback === true,
     imageAspectRatio: previewConfig.imageAspectRatio === "3:4" ? "3:4" : "9:16",
     contentLanguage: normalizeContentLanguage(previewConfig.contentLanguage),
+    quality: ["auto", "low", "medium", "high", "xhigh", "max"].includes(String(previewConfig.quality))
+      ? String(previewConfig.quality) as "auto" | "low" | "medium" | "high" | "xhigh" | "max"
+      : "auto",
   } as {
     allowSvgFallback: boolean;
     imageAspectRatio: "3:4" | "9:16";
     contentLanguage: ContentLanguage;
+    quality: "auto" | "low" | "medium" | "high" | "xhigh" | "max";
   };
 }
 
@@ -191,6 +196,13 @@ function buildImageModelCandidates(
     : options?.regenerate
       ? "isDefaultDetailImage"
       : "isDefaultHeroImage";
+
+  // The current five-round quality test is intentionally pinned to the
+  // models discovered from the active provider. Never silently fall back to
+  // another image model when Flare is available.
+  const normalized = (value: string) => value.toLowerCase().replace(/[^a-z0-9.]/g, "");
+  const flare = candidatePool.find(item => normalized(item.modelId) === "gptimage2.5flare");
+  if (flare) return [flare.modelId];
 
   if (options?.preferredModelId) {
     return [options.preferredModelId];
@@ -438,6 +450,7 @@ async function editWithFallback(params: {
   projectId: string;
   sectionId: string;
   operation: string;
+  quality?: "auto" | "low" | "medium" | "high" | "xhigh" | "max";
   signal?: AbortSignal;
 }) {
   const errors: string[] = [];
@@ -445,6 +458,7 @@ async function editWithFallback(params: {
   for (const model of params.candidateModels) {
     try {
       const generated = await params.adapter.editImage({
+        quality: params.quality,
         model,
         prompt: params.prompt,
         image: params.image,
@@ -718,6 +732,7 @@ async function generateSectionImageInternal(
           sectionAspectRatio,
           generationSettings.contentLanguage,
           generationRequirements,
+          project.platform,
         )
       : buildSectionImagePrompt(
           section,
@@ -725,6 +740,7 @@ async function generateSectionImageInternal(
           sectionAspectRatio,
           generationSettings.contentLanguage,
           generationRequirements,
+          project.platform,
         );
     const prompt = await buildVisualPromptWithAgent({
       provider,
@@ -923,6 +939,7 @@ export async function editSectionImage(
     referenceAssetIds?: string[];
     editMode?: "repaint" | "enhance" | "translate";
     targetLanguage?: ContentLanguage;
+    instruction?: string;
   },
 ) {
   const project = await prisma.project.findUnique({
@@ -964,15 +981,15 @@ export async function editSectionImage(
     regenerate: true,
   });
   const selectedModel = modelCandidates[0] ?? null;
+  const editMode = options?.editMode ?? "repaint";
   const explicitReferenceAssets = await resolveReferenceAssets(options?.referenceAssetIds ?? []);
   const productReferenceAssets = mergeReferenceAssets(project.assets as AssetRecord[], explicitReferenceAssets as AssetRecord[]);
   const baseImage = await assetToDataUrl(section.currentImageAsset as AssetRecord);
-  const referenceImages = await Promise.all(
+  const referenceImages = editMode === "translate" ? [] : await Promise.all(
     productReferenceAssets
       .filter((asset) => asset.id !== section.currentImageAssetId)
       .map((asset) => assetToDataUrl(asset)),
   );
-  const editMode = options?.editMode ?? "repaint";
   const effectiveContentLanguage = editMode === "translate" ? normalizeContentLanguage(options?.targetLanguage) : generationSettings.contentLanguage;
   const runningTask = await findRecentRunningTask({
     projectId,
@@ -1014,15 +1031,19 @@ export async function editSectionImage(
       sectionAspectRatio,
       effectiveContentLanguage,
       generationRequirements,
+      project.platform,
     );
-    const prompt = await buildVisualPromptWithAgent({
+    const promptWithInstruction = options?.instruction?.trim()
+      ? `${basePrompt}\n\nUser requested edit (follow this request while preserving the product identity and all unsupported facts):\n${options.instruction.trim()}`
+      : basePrompt;
+    const prompt = editMode === "translate" ? buildTranslationPrompt(effectiveContentLanguage, options?.instruction) : await buildVisualPromptWithAgent({
       provider,
       adapter,
       mode: "image_edit",
       title: section.title,
       goal: section.goal,
       copy: section.copy,
-      basePrompt,
+      basePrompt: promptWithInstruction,
       aspectRatio: sectionAspectRatio,
       contentLanguage: effectiveContentLanguage,
       referenceImages: [baseImage, ...referenceImages],
@@ -1031,7 +1052,7 @@ export async function editSectionImage(
       visualStyleGuide,
       projectId,
       sectionId,
-      operation: editMode === "translate" ? "visual_prompt_agent_translate_section" : editMode === "enhance" ? "visual_prompt_agent_enhance_section" : "visual_prompt_agent_repaint_section",
+      operation: editMode === "enhance" ? "visual_prompt_agent_enhance_section" : "visual_prompt_agent_repaint_section",
     });
 
     let imageAsset;
@@ -1044,7 +1065,10 @@ export async function editSectionImage(
         throw new Error("当前 Provider 没有识别到可用于真实图片编辑的模型。");
       }
 
-      const generation = await editWithFallback({
+      const generation = editMode === "translate" ? {
+        model: selectedModel,
+        generated: await adapter.generateImageOnce({ model: selectedModel, prompt, referenceImages: [baseImage], size: "auto", quality: generationSettings.quality, timeoutMs: 180000, monitor: { projectId, sectionId, operation: "translate_section_image" } }),
+      } : await editWithFallback({
         adapter,
         candidateModels: modelCandidates,
         prompt,
@@ -1054,7 +1078,8 @@ export async function editSectionImage(
         referenceImages,
         projectId,
         sectionId,
-        operation: editMode === "translate" ? "translate_section_image" : editMode === "enhance" ? "enhance_section_image" : "repaint_section_image",
+        operation: editMode === "enhance" ? "enhance_section_image" : "repaint_section_image",
+        quality: generationSettings.quality,
       });
 
       imageAsset = await saveGeneratedImage({
@@ -1076,6 +1101,7 @@ export async function editSectionImage(
       usedModel = generation.model;
       generationMode = "image_api";
     } catch (error) {
+      if (editMode === "translate") throw error;
       if (!generationSettings.allowSvgFallback) {
         const detail = error instanceof Error ? error.message : "Unknown image edit error";
         if (/monthly spending limit|spending limit|billing|quota/i.test(detail)) {
@@ -1111,7 +1137,6 @@ export async function editSectionImage(
           mode: "svg_fallback",
           usedModel: fallback.model,
           editMode,
-          targetLanguage: editMode === "translate" ? effectiveContentLanguage : undefined,
           baseImageAssetId: section.currentImageAssetId,
           layout: fallback.layout,
           sourceReferenceAssetIds: productReferenceAssets.map((asset) => asset.id),

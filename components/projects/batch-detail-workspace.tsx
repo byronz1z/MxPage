@@ -12,11 +12,12 @@ import { fileToBase64Payload } from "@/lib/utils/base64-upload";
 import { contentLanguageLabels, contentLanguageOptions, type ContentLanguage } from "@/lib/utils/content-language";
 import { platformLabels, platformOptions } from "@/types/domain";
 import { StyleReferencePicker } from "./style-reference-picker";
+import { translationQueue } from "@/lib/translation/client-queue";
 
 type Group = { key: string; name: string; files: File[] };
-type Batch = { id: string; status: string; error?: string | null; items: { projectId: string; ready?: boolean; language?: ContentLanguage; runId?: string; name: string; status: string; message: string; images: { id: string; type: string; url: string | null }[] }[] };
+type Batch = { id: string; status: string; error?: string | null; items: { projectId: string; ready?: boolean; language?: ContentLanguage; runId?: string; name: string; status: string; message: string; translationProgress?: { completed: number; failed: number; total: number }; failures?: { title: string; message: string }[]; images: { id: string; type: string; url: string | null }[] }[] };
 const labels: Record<string, string> = { QUEUED: "等待生成", RUNNING: "生成中", PENDING: "准备中", COMPLETED: "已完成", PARTIAL: "部分完成 · 需检查", WAITING_INPUT: "需要补充信息", FAILED: "未完成", INTERRUPTED: "已中断", CANCELED: "已停止" };
-async function data(response: Response) { const body = await response.json(); if (!body.success) throw new Error(body.error?.message || "请求失败"); return body.data; }
+import { ApiRequestError, fetchApiProgress, readApiResponse as data, requestErrorMessage } from "@/lib/utils/request-error";
 const post = (url: string, body: unknown) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then(data);
 
 export function BatchDetailWorkspace({ translation = false }: { translation?: boolean }) {
@@ -44,19 +45,23 @@ export function BatchDetailWorkspace({ translation = false }: { translation?: bo
   const upload = useRef<{ id: string; projects: { id: string; uploaded: number; styleUploaded: number }[] }>({ id: "", projects: [] });
   const [previews, setPreviews] = useState<string[]>([]);
   const running = !!batch && ["PENDING", "RUNNING"].includes(batch.status);
-  useEffect(() => { try { const id = localStorage.getItem(storageKey); if (id) setBatchId(id); } catch {} }, []);
+  const finishing = !running && !!batch?.items.some(item => item.status === "RUNNING");
+  const hasFailedImages = !!batch?.items.some(item => (item.translationProgress?.failed || 0) > 0);
+  const hasPending = !!batch?.items.some(item => item.status !== "COMPLETED" && (!item.translationProgress || item.translationProgress.completed + item.translationProgress.failed < item.translationProgress.total));
+  useEffect(() => { try { const id = new URLSearchParams(window.location.search).get("batch") || (!translation ? localStorage.getItem(storageKey) : null); if (id) { setBatchId(id); if (translation) translationQueue.watch(id); } } catch {} }, []);
   useEffect(() => { const urls = groups.map(g => URL.createObjectURL(g.files[0])); setPreviews(urls); return () => urls.forEach(URL.revokeObjectURL); }, [groups]);
   useEffect(() => {
     if (!batchId) return;
-    let disposed = false;
+    let disposed = false, failures = 0;
+    const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
-      try { const value = await data(await fetch(`/api/detail-batches/${batchId}`, { cache: "no-store" })); if (!disposed) { setBatch(value); setPollError(""); } }
-      catch (error) { if (!disposed) setPollError(error instanceof Error ? error.message : "读取进度失败"); }
-      finally { if (!disposed) timer = setTimeout(poll, 2500); }
+      try { const value = await fetchApiProgress(`/api/detail-batches/${batchId}`, controller.signal); if (!disposed) { setBatch(value); setPollError(""); failures = 0; } }
+      catch (error) { if (!disposed) { setPollError(requestErrorMessage(error)); failures++; if (error instanceof ApiRequestError && error.status === 404) disposed = true; } }
+      finally { if (!disposed) timer = setTimeout(poll, Math.min(30000, 2500 * 2 ** Math.min(failures, 4))); }
     }
     void poll();
-    return () => { disposed = true; clearTimeout(timer); };
+    return () => { disposed = true; controller.abort(); clearTimeout(timer); };
   }, [batchId]);
   function choose(files: File[]) {
     try {
@@ -64,7 +69,7 @@ export function BatchDetailWorkspace({ translation = false }: { translation?: bo
         if (!files.length || files.length > (uploadMode === "single" ? 1 : 30)) throw new Error(uploadMode === "single" ? "单张翻译请选择一张图片。" : "每套最多 30 张图片。");
         if (files.some(f => !/\.(png|jpe?g|webp)$/i.test(f.name) || f.size > 10 * 1024 * 1024)) throw new Error("支持 PNG、JPEG、WebP，每张不超过 10MB。");
         const ordered = [...files].sort((a,b) => a.name.localeCompare(b.name, "zh-CN", { numeric: true }));
-        setGroups([{ key: "images", name: ordered[0].name.replace(/\.[^.]+$/, ""), files: ordered }]); setIgnored(0); return;
+        setGroups([{ key: "images", name: ordered[0].name.replace(/\.[^.]+$/, ""), files: ordered }]); setIgnored(0); upload.current = { id: "", projects: [] }; setPrepared(false); return;
       }
       const result = groupProductFiles(files, translation ? 30 : 8);
       if (!result.groups.length) throw new Error("文件夹中没有 PNG、JPEG 或 WebP 图片。");
@@ -73,6 +78,12 @@ export function BatchDetailWorkspace({ translation = false }: { translation?: bo
   }
   async function start() {
     if (pending.current || !groups.length || running || (translation && !languages.length)) return;
+    if (translation) {
+      translationQueue.enqueue({ groups, languages: [...languages], quality, instruction: description });
+      setGroups([]); setPreviews([]); setIgnored(0);
+      toast.success("已加入右下角任务队列，可以离开当前页面");
+      return;
+    }
     pending.current = true; setBusy(true); setPrepared(true);
     upload.current.id ||= crypto.randomUUID();
     try {
@@ -82,6 +93,9 @@ export function BatchDetailWorkspace({ translation = false }: { translation?: bo
         if (!saved) {
           const p = await post("/api/projects", { name: group.name.slice(0, 80).padEnd(2, "商品"), platform, style: "generic_clean", description });
           saved = { id: p.id, uploaded: 0, styleUploaded: 0 }; upload.current.projects[index] = saved;
+        }
+        if (translation) {
+          await data(await fetch(`/api/projects/${saved.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ modelSnapshot: { workType: "translation" } }) }));
         }
         for (let i = saved.uploaded; i < group.files.length; i++) {
           await post(`/api/projects/${saved.id}/assets/upload`, { type: i === 0 ? "MAIN" : "ANGLE", ...await fileToBase64Payload(group.files[i]) });
@@ -95,22 +109,23 @@ export function BatchDetailWorkspace({ translation = false }: { translation?: bo
           await data(await fetch(`/api/projects/${saved.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ modelSnapshot: { creativePreferences: { version: 2, userDirection: direction } } }) }));
         }
       }
-      setStage("检查模型配置并启动批量任务…");
+      setStage(translation ? "启动批量翻译…" : "检查模型配置并启动批量任务…");
       const result = await post("/api/detail-batches", { id: upload.current.id, projectIds: upload.current.projects.map(p => p.id), options: { language, quality, heroCount, detailCount }, ...(translation ? { translations: languages, translationInstruction: description } : {}) });
       setBatch(result); setBatchId(result.id);
       try { localStorage.setItem(storageKey, result.id); } catch {}
     } catch (error) { toast.error(error instanceof Error ? error.message : "启动失败"); }
     finally { pending.current = false; setBusy(false); setStage(""); }
   }
-  async function control(action: "cancel" | "resume") {
+  async function control(action: "cancel" | "resume", retryFailed = false) {
     if (!batchId || pending.current) return;
     pending.current = true; setBusy(true);
-    try { setBatch(await post(`/api/detail-batches/${batchId}`, { action })); }
+    try { setBatch(await post(`/api/detail-batches/${batchId}`, { action, retryFailed })); if (translation) void translationQueue.refresh(batchId); }
     catch (error) { toast.error(error instanceof Error ? error.message : "操作失败"); }
     finally { pending.current = false; setBusy(false); }
   }
   function reset() {
     setBatch(null); setBatchId(undefined); setGroups([]); setStyleFiles([]); setPrepared(false); upload.current = { id: "", projects: [] };
+    window.history.replaceState(null, "", window.location.pathname);
     try { localStorage.removeItem(storageKey); } catch {}
   }
   return <section className="mx-auto max-w-4xl space-y-7 py-6">
@@ -133,11 +148,12 @@ export function BatchDetailWorkspace({ translation = false }: { translation?: bo
         {!translation && <><label className="block space-y-2 text-sm">整批自定义视觉要求（可选）<Textarea value={direction} onChange={e=>setDirection(e.target.value)} maxLength={1200} placeholder="留空时，按每件商品选择摄影、配色和构图。"/></label><StyleReferencePicker files={styleFiles} onChange={setStyleFiles} disabled={busy || prepared} batch/></>}
       </fieldset>
       <Button className="h-12 w-full" disabled={busy || !groups.length || (translation && !languages.length)} onClick={start}>{busy && <Loader2 className="mr-2 h-4 w-4 animate-spin"/>}{busy ? stage : translation ? `开始翻译 · ${languages.length} 种语言 / ${groups.reduce((n,g)=>n+g.files.length,0)*languages.length} 张` : `开始批量生成 · ${groups.length} 套 / ${groups.length*(heroCount+detailCount)} 张`}</Button>
-      <p className="text-xs leading-6 text-muted-foreground">{translation ? "每种语言直接从原图翻译，原图保留。完成一套即展示一套；每张最多自动修正一次。模糊文字、翻译和排版仍需人工核对，输出尺寸由图像模型决定。" : "确认分组后开始。逐商品生成，遇到需补问或失败的商品会保留现场并继续下一件；每张最多自动修正一次。任务启动后由服务端执行。"}</p>
+      <p className="text-xs leading-6 text-muted-foreground">{translation ? "点击开始后，可切换页面并在右下角查看队列进度。显示“后台翻译中”后，刷新或关闭页面也不影响任务。每批最多同时翻译 2 张，结果自动保存到“我的作品”，失败图片可手动重试。" : "确认分组后开始。逐商品生成，遇到需补问或失败的商品会保留现场并继续下一件；每张最多自动修正一次。任务启动后由服务端执行。"}</p>
     </>}
     {pollError && <p role="alert" className="text-sm text-destructive">{pollError} <Button variant="ghost" size="sm" onClick={reset}>清除本地批次视图</Button></p>}
-    {batch && <div className="space-y-5"><div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-card p-5"><div><p className="font-medium">已完成 {batch.items.filter(i=>i.status==="COMPLETED").length} / {batch.items.length} 套</p><p className="mt-1 text-sm text-muted-foreground">{running ? "正在后台逐套生成，可切换模式或刷新页面。" : batch.error || "全部生成完成"}</p></div><div className="flex gap-2">{running ? <Button disabled={busy} variant="outline" onClick={()=>control("cancel")}>停止批次</Button> : <><Button disabled={busy} variant="outline" onClick={reset}>新建批次</Button>{batch.status !== "SUCCESS" && <Button disabled={busy} onClick={()=>control("resume")}>继续未完成队列</Button>}</>}</div></div>
-      {batch.items.map(item=><article key={item.projectId} className="space-y-4 rounded-2xl border bg-card p-5"><div className="flex items-start justify-between gap-4"><div><h2 className="font-semibold">{item.name}</h2>{item.language && <p className="mt-1 text-sm">{contentLanguageLabels[item.language]}</p>}<p className="mt-1 text-sm text-muted-foreground">{labels[item.status] || item.status} · {item.message}</p></div>{item.ready !== false && <Link className="shrink-0 text-sm underline" href={`/projects/${item.projectId}/editor`}>{item.status === "WAITING_INPUT" ? "补充信息" : "打开作品"}</Link>}</div>{item.images.length > 0 && <div className="flex gap-3 overflow-x-auto pb-2">{item.images.map(image=><Link key={image.id} href={`/projects/${item.projectId}/editor`} className="shrink-0"><img src={image.url || ""} alt={image.type === "HERO" ? "生成头图" : "生成详情图"} className="h-48 w-36 rounded-xl border object-contain"/></Link>)}</div>}{item.status === "COMPLETED" && <Link className="inline-block text-sm underline" href={`/api/projects/${item.projectId}/export/images`}>下载这一套 ZIP</Link>}</article>)}
+    {batch && <div className="space-y-5"><div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-card p-5"><div><p className="font-medium">已完成 {batch.items.filter(i=>i.status==="COMPLETED").length} / {batch.items.length} 套</p><p className="mt-1 text-sm text-muted-foreground">{running ? translation ? "正在后台翻译，每张完成即保存，可刷新页面查看进度。" : "正在后台逐套生成，可切换模式或刷新页面。" : finishing ? "正在保存当前图片请求，请稍后继续。" : batch.error || (translation ? "全部翻译完成" : "全部生成完成")}</p></div><div className="flex flex-wrap gap-2">{running ? <Button disabled={busy} variant="outline" onClick={()=>control("cancel")}>停止批次</Button> : <><Button disabled={busy || finishing} variant="outline" onClick={reset}>新建批次</Button>{batch.status !== "SUCCESS" && (!translation || hasPending) && <Button disabled={busy || finishing} onClick={()=>control("resume")}>继续未完成队列</Button>}{translation && hasFailedImages && <Button disabled={busy || finishing} onClick={()=>control("resume", true)}>重试失败图片</Button>}</>}</div></div>
+      {translation && hasFailedImages && <p className="text-xs text-muted-foreground">超时或中断的请求可能已在上游执行。点击“重试失败图片”会重新请求这些图片，可能再次计费；已成功译图不会重做。</p>}
+      {batch.items.map(item=><article key={item.projectId} className="space-y-4 rounded-2xl border bg-card p-5"><div className="flex items-start justify-between gap-4"><div><h2 className="font-semibold">{item.name}</h2>{item.language && <p className="mt-1 text-sm">{contentLanguageLabels[item.language]}</p>}<p className="mt-1 text-sm text-muted-foreground">{translation && item.status === "RUNNING" ? "翻译中" : labels[item.status] || item.status} · {item.message}</p></div>{item.ready !== false && <Link className="shrink-0 text-sm underline" href={`/projects/${item.projectId}/editor`}>{item.status === "WAITING_INPUT" ? "补充信息" : "打开作品"}</Link>}</div>{item.translationProgress && <progress className="h-2 w-full" aria-label={`${item.name}翻译进度`} value={item.translationProgress.completed} max={item.translationProgress.total}/>} {!!item.failures?.length && <ul className="space-y-1 text-sm text-destructive">{item.failures.map((failure,i)=><li key={i}>{failure.title}：{failure.message}</li>)}</ul>}{item.images.length > 0 && <div className="flex gap-3 overflow-x-auto pb-2">{item.images.map(image=><Link key={image.id} href={`/projects/${item.projectId}/editor`} className="shrink-0"><img src={image.url || ""} alt={translation ? "翻译结果" : image.type === "HERO" ? "生成头图" : "生成详情图"} className="h-48 w-36 rounded-xl border object-contain"/></Link>)}</div>}{item.images.length > 0 && <Link className="inline-block text-sm underline" href={`/api/projects/${item.projectId}/export/images`}>下载已完成图片 ZIP</Link>}</article>)}
     </div>}
   </section>;
 }

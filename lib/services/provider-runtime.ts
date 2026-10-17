@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "async_hooks";
+import { createHash } from "crypto";
 import type { NextRequest } from "next/server";
 
 import { env } from "@/lib/utils/env";
@@ -44,4 +45,8 @@ export async function runWithProviderCredentials<T>(credentials: RequestProvider
 }
 export function getRequestProviderCredentials() {
   return providerCredentialStorage.getStore() ?? {};
+}
+
+export function providerCredentialFingerprint(apiKey?: string) {
+  return apiKey?.trim() ? createHash("sha256").update(apiKey.trim()).digest("hex") : undefined;
 }

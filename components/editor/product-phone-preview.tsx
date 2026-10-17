@@ -1,9 +1,11 @@
 "use client";
 
 import React, { useRef, useState } from "react";
-import { BatteryFull, ChevronLeft, ChevronRight, Expand, ImageOff, Signal, Wifi } from "lucide-react";
+import { ChevronLeft, ChevronRight, Expand, ImageOff } from "lucide-react";
 import type { ImageProgress } from "@/lib/detail-runs/contracts";
 import { TaobaoProductPreview, type ListingPreview } from "./taobao-product-preview";
+import { IPhoneStatusBar } from "./iphone-status-bar";
+import { ImageGenerationLoading } from "@/components/shared/image-generation-loading";
 
 export type PreviewSection = {
   id: string; type: string; title: string; order: number; imageUrl?: string | null;
@@ -13,18 +15,42 @@ export type PreviewSection = {
 
 export function imageReview(section: PreviewSection, progress: ImageProgress[]) {
   const saved = (section.currentImageAsset?.metadata as { visualCheck?: ImageProgress["check"] } | null)?.visualCheck;
-  const latest = progress.find(p => p.sectionId === section.id)?.check;
-  return [saved, latest].find(check => check?.assetId === section.currentImageAssetId);
+  const entry = progress.find(p => p.sectionId === section.id);
+  const latest = entry?.check;
+  const matched = [saved, latest].find(check => check?.assetId && check.assetId === section.currentImageAssetId);
+  if (matched) return matched;
+  // V4 stores the asset identity on the image checkpoint and structured issues
+  // inside its check; legacy checks carry their own assetId and string issues.
+  if (latest && !latest.assetId && entry?.assetId && entry.assetId === section.currentImageAssetId) {
+    const issues = latest.issues as unknown as Array<{ message: string; severity: string }>;
+    if (issues.every(issue => typeof issue === "object" && typeof issue?.message === "string")) return { assetId: entry.assetId, passed: latest.passed && !issues.some(issue => issue.severity === "error"), issues: issues.map(issue => issue.message) };
+  }
+  return undefined;
 }
 
 export function ProductImage({ section, progress, square = false }: { section: PreviewSection; progress: ImageProgress[]; square?: boolean }) {
   const [failedUrl, setFailedUrl] = useState<string>();
   const pending = progress.find(p => p.sectionId === section.id);
+  const generating = pending?.state === "generating";
+  if (generating && (!section.imageUrl || failedUrl === section.imageUrl)) return <ImageGenerationLoading className={square ? "aspect-square" : "aspect-[3/4]"}/>;
   if (!section.imageUrl || failedUrl === section.imageUrl) return <div className={`flex items-center justify-center gap-2 bg-neutral-100 px-4 text-center text-sm text-neutral-600 ${square ? "aspect-square" : "aspect-[3/4]"}`}>
     <ImageOff className="h-4 w-4 shrink-0"/>
     <span>{section.imageUrl ? "图片加载失败，请查看原图或刷新" : pending?.state === "generating" ? "正在生成…" : pending?.state === "uncertain" ? "生成结果待确认" : "等待生成"}</span>
   </div>;
-  return <img src={section.imageUrl} alt={section.title} onError={() => setFailedUrl(section.imageUrl!)} className={square ? "block aspect-square w-full bg-white object-contain" : "block h-auto w-full"}/>;
+  return <div className="relative w-full"><img src={section.imageUrl} alt={section.title} onError={() => setFailedUrl(section.imageUrl!)} className={square ? "block aspect-square w-full bg-white object-contain" : "block h-auto w-full"}/>{generating && <ImageGenerationLoading overlay label="正在更新图片"/>}</div>;
+}
+
+export function HeroCarouselImages({ heroes, index, progress, onActivate, label = "查看头图" }: {
+  heroes: PreviewSection[]; index: number; progress: ImageProgress[];
+  onActivate: (id: string) => void; label?: string;
+}) {
+  return <div className="mx-phone-carouselWindow">
+    <div className="mx-phone-carouselTrack" style={{ transform: `translate3d(${-index * 100}%, 0, 0)` }}>
+      {heroes.map((section, i) => <button key={section.id} type="button" className="mx-phone-carouselSlide" aria-label={`${label}：${section.title}`} aria-hidden={i !== index} tabIndex={i === index ? 0 : -1} onClick={() => onActivate(section.id)}>
+        <ProductImage section={section} progress={progress} square/>
+      </button>)}
+    </div>
+  </div>;
 }
 
 export function ProductPhonePreview(props: {
@@ -54,13 +80,14 @@ function GenericProductPhonePreview({ name, platform, sections, progress, select
   }
   return <section aria-label="手机商品页预览" className="rounded-2xl border bg-muted/20 p-3 sm:p-6">
     <div className="mb-5 flex flex-wrap items-center justify-between gap-2"><h2 className="font-medium">手机商品页预览</h2><span className="text-xs text-muted-foreground">{platform} · 当前生效图片</span></div>
-    <div className="relative mx-auto w-full max-w-[390px] rounded-[44px] border border-neutral-600 bg-neutral-900 p-2 shadow-xl">
-      <div className="flex h-[min(760px,78svh)] min-h-[480px] flex-col overflow-hidden rounded-[36px] bg-white text-neutral-900 [color-scheme:light]">
-        <div aria-hidden="true" className="relative flex h-11 shrink-0 items-center justify-between px-6 text-[11px] font-semibold"><span>9:41</span><span className="absolute left-1/2 top-2 h-6 w-24 -translate-x-1/2 rounded-full bg-neutral-950"/><span className="flex gap-1"><Signal size={13}/><Wifi size={13}/><BatteryFull size={17}/></span></div>
+    <div className="mx-phone-device">
+      <div className="mx-phone-screenShell text-neutral-900 [color-scheme:light]">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden bg-white">
+        <IPhoneStatusBar/>
         <div className="flex shrink-0 items-center justify-between border-b border-neutral-100 px-4 py-2 text-xs"><span className="font-medium">商品预览</span><span className="text-neutral-500">仅预览 · 不含交易功能</span></div>
         <div ref={viewport} role="region" aria-label="手机页面内容，可滚动" tabIndex={0} className="scrollbar-hidden min-h-0 flex-1 overflow-y-auto overscroll-contain focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-neutral-500">
           {hero && <section aria-label="手机头图轮播">
-            <button type="button" aria-label={`选择头图：${hero.title}`} aria-pressed={selected === hero.id} className="block w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-neutral-500" onClick={() => onSelect(hero.id)}><ProductImage key={hero.id} section={hero} progress={progress} square/></button>
+            <HeroCarouselImages heroes={heroes} index={heroIndex % heroes.length} progress={progress} onActivate={onSelect} label="选择头图"/>
             <div className="flex items-center justify-center gap-3 px-3 py-2">
               <button type="button" aria-label="上一张头图" disabled={heroes.length < 2} className="rounded-lg p-2 hover:bg-neutral-100 disabled:opacity-30" onClick={() => selectHero((heroIndex + heroes.length - 1) % heroes.length)}><ChevronLeft size={16}/></button>
               {heroes.map((h, i) => <button key={h.id} type="button" aria-label={`头图 ${i + 1}：${h.title}`} aria-pressed={h.id === hero.id} className="flex h-8 w-6 items-center justify-center rounded focus-visible:ring-2 focus-visible:ring-neutral-500" onClick={() => selectHero(i)}><span className={`h-1.5 rounded-full ${h.id === hero.id ? "w-5 bg-neutral-900" : "w-1.5 bg-neutral-300"}`}/></button>)}
@@ -82,6 +109,8 @@ function GenericProductPhonePreview({ name, platform, sections, progress, select
           </div><div aria-hidden="true" className="mx-auto mb-2 mt-3 h-1 w-24 rounded-full bg-neutral-900"/>
         </div>
       </div>
+      </div>
+      <img src="/assets/phone-mockup-frame.png" alt="" aria-hidden="true" data-testid="phone-mockup-overlay" className="mx-phone-frame" />
     </div>
     <p className="mt-5 text-center text-xs leading-5 text-muted-foreground">滚动查看整页，点击图片可在编辑区修改。详情图按原比例无缝排列；手机外框和界面不会导出。</p>
     {sections.some(s => s.imageUrl && imageReview(s, progress)?.passed === false) && <p className="mt-2 text-center text-xs text-amber-700 dark:text-amber-400">部分图片被标记为需检查，请在编辑区核对。</p>}

@@ -1,22 +1,29 @@
 {
   "name": "mxpage",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": false,
   "description": "MxPage AI e-commerce detail page generation and editing workspace",
   "author": "灵矩绘境 · MxPage",
+  "license": "MIT",
+  "homepage": "https://github.com/ziguishian/MxPage",
+  "repository": { "type": "git", "url": "https://github.com/ziguishian/MxPage.git" },
+  "engines": { "node": ">=24 <25" },
   "main": "desktop/main.cjs",
   "scripts": {
     "test": "node --import tsx --test tests/*.test.ts tests/*.test.tsx",
-    "test:detail": "tsx --test tests/detail-runs.test.ts",
+    "test:detail": "tsx --test tests/workflow-v4.test.ts tests/workflow-v4-recovery.test.ts tests/content-review-v4.test.ts tests/image-prompts-v4.test.ts",
     "dev": "node ./scripts/run-next-safe.cjs dev",
-    "build": "npm run prisma:generate && node ./scripts/run-next-safe.cjs build",
+    "build": "npm run docs:sync && npm run prisma:generate && node ./scripts/run-next-safe.cjs build",
     "start": "node ./scripts/run-next-safe.cjs start",
     "desktop:start": "node ./scripts/build-desktop.cjs start",
-    "build:desktop": "node ./scripts/build-desktop.cjs prepare",
-    "dist:mac": "npm run build:desktop && electron-builder --mac dmg zip --arm64",
-    "dist:win": "npm run build:desktop && .\\node_modules\\.bin\\electron-builder.cmd --win nsis",
-    "dist:green": "npm run build:desktop && .\\node_modules\\.bin\\electron-builder.cmd --win dir zip",
-    "dist:all-win": "npm run build:desktop && .\\node_modules\\.bin\\electron-builder.cmd --win nsis dir zip",
+    "build:desktop": "npm run docs:sync && npm run prisma:generate && node ./scripts/build-desktop.cjs prepare",
+    "docs:sync": "node ./scripts/sync-public-docs.cjs",
+    "dist:mac": "npm run build:desktop && electron-builder --mac zip --publish never",
+    "dist:win": "npm run build:desktop && electron-builder --win nsis --x64 --publish never",
+    "dist:green": "npm run build:desktop && electron-builder --win zip --x64 --publish never",
+    "dist:all-win": "npm run build:desktop && electron-builder --win nsis zip --x64 --publish never",
+    "smoke:desktop": "node ./scripts/smoke-desktop.cjs",
+    "typecheck": "tsc --noEmit",
     "lint": "node -e \"console.log('Linting is not configured for this Windows path-safe build.')\"",
     "prisma:generate": "node ./scripts/run-prisma-safe.cjs generate",
     "prisma:migrate": "node ./scripts/apply-prisma-migrations.cjs",
@@ -24,7 +31,6 @@
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
-    "@openai/agents": "^0.18.0",
     "@prisma/client": "^6.19.2",
     "@radix-ui/react-alert-dialog": "^1.1.14",
     "@radix-ui/react-dialog": "^1.1.14",
@@ -70,6 +76,7 @@
     "appId": "com.mxpage.app",
     "productName": "MxPage",
     "asar": false,
+    "npmRebuild": false,
     "asarUnpack": [
       ".next-desktop/standalone/node_modules/.prisma/**/*",
       ".next-desktop/standalone/node_modules/@prisma/**/*"
@@ -82,16 +89,23 @@
       "desktop/**/*",
       ".next-desktop/standalone/**/*",
       ".next-desktop/static/**/*",
-      "public/**/*",
       "scripts/runtime-paths.cjs",
       "scripts/apply-prisma-migrations.cjs",
       "package.json",
       "!**/.env*",
       "!**/*.db",
       "!**/*.db-*",
-      "!**/storage/**/*"
+      "!**/storage/**/*",
+      "!**/test-reports/**/*",
+      "!**/test-output/**/*",
+      "!**/*.log"
     ],
-    "extraResources": [{ "from": "public/brand-icon.ico", "to": "icon.ico" }],
+    "extraResources": [
+      {
+        "from": "public/brand-icon.ico",
+        "to": "icon.ico"
+      }
+    ],
     "win": {
       "icon": "public/brand-icon.ico",
       "target": [
@@ -114,7 +128,15 @@
           ]
         }
       ],
-      "artifactName": "mxpage-${version}.${ext}"
+      "artifactName": "MxPage-${version}-windows-${arch}.${ext}"
+    },
+    "mac": {
+      "category": "public.app-category.graphics-design",
+      "target": ["zip"],
+      "icon": "public/brand-icon.png",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "artifactName": "MxPage-${version}-macos-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,

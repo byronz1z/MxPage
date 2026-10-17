@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { trackQueueRequest } from "@/lib/tasks/client-requests";
 
 export const CLIENT_PROVIDER_STORAGE_KEY = "mxpage:provider-credentials:v1";
 
@@ -53,7 +54,9 @@ export function ProviderCredentialFetchBridge() {
         headers.set("x-mxpage-base-url", credentials.baseUrl);
       }
 
-      return originalFetch(input, { ...init, headers });
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.origin);
+      const method = init.method ?? (input instanceof Request ? input.method : "GET");
+      return trackQueueRequest(url.pathname, method, () => originalFetch(input, { ...init, headers }));
     };
 
     return () => {

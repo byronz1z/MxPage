@@ -11,8 +11,13 @@ const nextDistDirName = process.env.NEXT_DIST_DIR || ".next";
 const command = process.argv[2];
 
 if (command === "dev" || command === "build") {
-  const nextCacheDir = path.join(safeCwd, nextDistDirName);
+  if (!/^\.next(?:-[a-zA-Z0-9_-]+)?$/.test(nextDistDirName)) {
+    throw new Error("NEXT_DIST_DIR must be .next or a .next-* directory inside this project.");
+  }
+  const nextCacheDir = path.resolve(projectRoot, nextDistDirName);
+  if (path.dirname(nextCacheDir) !== projectRoot) throw new Error("Unsafe build output path");
   if (fs.existsSync(nextCacheDir)) {
+    if (fs.lstatSync(nextCacheDir).isSymbolicLink()) throw new Error("Refusing to remove a linked build directory");
     fs.rmSync(nextCacheDir, { recursive: true, force: true });
   }
 }

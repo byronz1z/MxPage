@@ -5,8 +5,8 @@ import { cn } from "@/lib/utils";
 import { QuickStartWorkspace } from "./quick-start-workspace";
 import { BatchDetailWorkspace } from "./batch-detail-workspace";
 
-export function HomeCreateWorkspace() {
-  const [batch, setBatch] = useState(false);
+export function HomeCreateWorkspace({ initialBatch = false }: { initialBatch?: boolean }) {
+  const [batch, setBatch] = useState(initialBatch);
 
   return (
     <>

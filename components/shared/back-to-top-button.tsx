@@ -38,7 +38,7 @@ export function BackToTopButton() {
       tabIndex={visible ? 0 : -1}
       aria-label="回到顶部"
       className={[
-        "fixed bottom-6 right-6 z-50 inline-flex h-12 w-12 items-center justify-center rounded-full",
+        "fixed bottom-5 right-[4.75rem] z-30 inline-flex h-11 w-11 items-center justify-center rounded-2xl sm:right-[5.25rem]",
         "border border-border bg-card text-foreground shadow-lg",
         "transition-all duration-200 hover:-translate-y-0.5 hover:bg-accent hover:shadow-[0_22px_45px_-24px_rgba(0,0,0,0.34)] active:scale-[0.97]",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",

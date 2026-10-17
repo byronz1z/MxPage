@@ -11,15 +11,24 @@ import { BackToTopButton } from "@/components/shared/back-to-top-button";
 import { BrandConsole } from "@/components/shared/brand-console";
 import { ChunkReloadGuard } from "@/components/shared/chunk-reload-guard";
 import { ImagePreviewProvider } from "@/components/shared/image-preview-provider";
+import { TaskQueue } from "@/components/tasks/task-queue";
+import { productDescription, productTitle, publicSiteUrl } from "@/lib/seo";
 
 export const metadata: Metadata = {
-  title: "MxPage",
+  metadataBase: publicSiteUrl(),
+  title: { default: productTitle, template: "%s · MxPage" },
+  applicationName: "MxPage",
+  keywords: ["MxPage", "AI电商详情页", "商品主图生成", "图片翻译", "小红书图文", "AI product images", "self-hosted"],
+  authors: [{ name: "灵矩绘境", url: "https://github.com/ziguishian/MxPage" }],
+  robots: { index: false, follow: false },
+  openGraph: { type: "website", locale: "zh_CN", siteName: "MxPage", title: productTitle, description: productDescription },
+  twitter: { card: "summary", title: productTitle, description: productDescription },
   icons: {
     icon: "/favicon.ico",
     shortcut: "/favicon.ico",
     apple: "/brand-icon.ico",
   },
-  description: "MxPage AI product page and social content generation workspace.",
+  description: productDescription,
 };
 
 export default function RootLayout({
@@ -36,6 +45,7 @@ export default function RootLayout({
         <ProviderCredentialFetchBridge />
         <ImagePreviewProvider>
           <AppShell>{children}</AppShell>
+          <TaskQueue />
           <BackToTopButton />
         </ImagePreviewProvider>
         <ThemeToaster />

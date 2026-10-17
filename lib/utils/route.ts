@@ -3,6 +3,7 @@ import { ZodError } from "zod";
 
 import { apiError, apiSuccess } from "@/lib/utils/api";
 import { networkErrorCode } from "./network-error";
+import { isStructuredSchemaRejection, requestErrorMessage } from "./request-error";
 
 export function ok<T>(data: T, init?: ResponseInit) {
   return NextResponse.json(apiSuccess(data), init);
@@ -13,6 +14,7 @@ export function fail(code: string, message: string, details?: unknown, status = 
 }
 
 function mapProviderError(error: Error) {
+  if (isStructuredSchemaRejection(error)) return { code: "PROVIDER_SCHEMA_REJECTED", message: requestErrorMessage(error), status: 400 };
   const text = error.message.toLowerCase();
   const causeCode = networkErrorCode(error);
 
@@ -73,18 +75,22 @@ export function handleRouteError(error: unknown) {
   }
 
   if (error instanceof Error) {
+    const code = (error as { code?: string }).code;
+    if (code === "P2025") return fail("NOT_FOUND", requestErrorMessage(error), null, 404);
+    if (code === "ENOENT") return fail("ASSET_MISSING", requestErrorMessage(error), null, 409);
+    if (["P1001", "P1002", "P1008", "P2024", "P2034"].includes(code || "")) return fail("SERVICE_BUSY", "本地服务暂时繁忙，请稍后刷新。已有结果已保留。", null, 503);
     const providerError = mapProviderError(error);
     if (providerError) {
-      return fail(providerError.code, providerError.message, { rawMessage: error.message }, providerError.status);
+      return fail(providerError.code, providerError.message, undefined, providerError.status);
     }
 
     const message = error.message.toLowerCase();
     if (message.includes("not found")) {
-      return fail("NOT_FOUND", error.message, null, 404);
+      return fail("NOT_FOUND", "该项目或资源已不存在，请返回列表刷新。", null, 404);
     }
 
-    return fail("INTERNAL_ERROR", error.message, null, 500);
+    return fail("INTERNAL_ERROR", requestErrorMessage(error), null, 500);
   }
 
-  return fail("UNKNOWN_ERROR", "未知错误", null, 500);
+  return fail("UNKNOWN_ERROR", requestErrorMessage(error), null, 500);
 }

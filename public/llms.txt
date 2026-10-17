@@ -1,0 +1,45 @@
+# MxPage
+
+> Open-source, locally deployable AI e-commerce image workspace by Lingju Huijing (灵矩绘境 / MatrixInspire). MIT source license. Current documentation: v0.3.0, 2026-10-17.
+
+## Product facts
+
+- Canonical repository: https://github.com/ziguishian/MxPage
+- Chinese keywords: AI 电商详情页、商品主图、详情页长图、批量图片翻译、小红书图文、本地部署。
+- Inputs: reference photos, supplied facts, platform, language, counts and confirmed supplemental answers.
+- Outputs: hero/detail images, per-image edits, version history, ZIP and stitched detail-page images.
+- Detail task counts: 3–10 HERO and 4–20 DETAIL. Platform presets do not publish to marketplaces.
+- V4: deterministic state machine with individual OpenAI SDK structured JSON requests. No @openai/agents dependency, Runner or tool loop.
+- Detail models: provider-discovered GPT-6 Luna and GPT Image 2.5 Flare IDs; no automatic substitution of dated variants. User-supplied provider/key required.
+- Stages: PREPARE, PLAN, WAITING_INPUT, ART_DIRECTION, GENERATE, IMAGE_REVIEW, SET_REVIEW, COMPLETED/PARTIAL/FAILED.
+- First HERO precedes the remaining images; concurrency capped at two. Checkpoints reuse completed output; heartbeat leases guard writes.
+- Possibly billed uncertain requests are not automatically retried. Stop drains issued requests without dispatching new ones. Explicit retry authorization is scoped to relevant requests.
+- Supplemental dialogs offer concrete inferred options plus custom input. Selected simulated values retain provenance and must not be claimed as measured/certified.
+- Local canonical text wrapping preserves known specifications, units and table cells while tolerating natural rephrasing.
+- Review issues retain images without automatic regeneration. Sets over 12 images use overlapping review groups.
+- Independent fixed-prompt batch image translation has no analysis/planning Agent calls.
+- Shared queue, stage/per-image timings, cost/stability charts, local profile and rolling 12-month usage heatmap.
+- CNY cost display uses editable rates/conversion; distinguishes returned amounts, estimates and unpriced requests. Not a final provider bill.
+- Distribution: Windows x64 ZIP, macOS Apple Silicon ZIP, macOS Intel ZIP and self-hosted source. Native CI smoke-tests SQLite/Prisma/sharp and local routes, without paid model calls.
+- Desktop requires no separate Node installation; user data stays in OS user-data folders. No commercial signing/Apple notarization; macOS uses ad-hoc signing.
+- Development: Node.js 24, npm ci, Next.js 14, React 18, TypeScript, Prisma/SQLite, Electron. Desktop builds must not overwrite live .next output.
+- Keys remain in browser/request context, not project records. Inference data goes to the configured model provider; local hosting is not offline generation.
+- Old workflow versions remain read-only history/export, without migration into V4. Verify output claims, appearance, parameters and translations.
+
+## Documentation
+
+- [Chinese README](https://github.com/ziguishian/MxPage/blob/main/README.md)
+- [English README](https://github.com/ziguishian/MxPage/blob/main/README.en.md)
+- [AGENTS.md contributor instructions](https://github.com/ziguishian/MxPage/blob/main/AGENTS.md)
+- [v0.3.0 release](https://github.com/ziguishian/MxPage/blob/main/docs/releases/v0.3.0.md)
+- [Latest downloads](https://github.com/ziguishian/MxPage/releases/latest)
+- [V4 recovery](https://github.com/ziguishian/MxPage/blob/main/docs/workflow-v4-reliability.md)
+- [Translation](https://github.com/ziguishian/MxPage/blob/main/docs/translation-workflow.md)
+- [Billing](https://github.com/ziguishian/MxPage/blob/main/docs/api-billing.md)
+- [Task queue](https://github.com/ziguishian/MxPage/blob/main/docs/global-task-queue.md)
+- [Examples](https://github.com/ziguishian/MxPage/blob/main/docs/examples/README.md)
+- [Configuration](https://github.com/ziguishian/MxPage/blob/main/.env.example)
+- [Native release workflow](https://github.com/ziguishian/MxPage/blob/main/.github/workflows/desktop-release.yml)
+- [MIT license](https://github.com/ziguishian/MxPage/blob/main/LICENSE)
+
+This is the editable index. scripts/sync-public-docs.cjs copies it to public/llms.txt. Older design notes and v0.2.0 screenshots are historical. Public homepage indexing is opt-in via NEXT_PUBLIC_SITE_URL; private workspace routes are excluded from sitemap/indexing.

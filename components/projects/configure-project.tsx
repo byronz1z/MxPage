@@ -18,7 +18,7 @@ import { StyleReferencePicker } from "./style-reference-picker";
 
 type Brief = { name: string; description: string; visualDirection: string; recommendedVisualDirection?: string; category?: keyof typeof categoryProfiles; uncertainties: string[]; recognition?: { modelId: string; imageCount: number; detail: "high"; analyzedAt: string; reviewed?: boolean; detailViewCount?: number; corrections?: string[] } };
 type Project = { id: string; name: string; description: string | null; platform: string; modelSnapshot: Record<string, any> | null; assets: { id: string; url: string; type: string; metadata?: unknown; fileName?: string }[] };
-async function data(response: Response) { const body = await response.json(); if (!body.success) throw new Error(body.error?.message || "请求失败"); return body.data; }
+import { ApiRequestError, readApiResponse as data, requestErrorMessage } from "@/lib/utils/request-error";
 export function ConfigureProject({ project }: { project: Project }) {
   const router = useRouter();
   const snapshot = project.modelSnapshot || {};
@@ -37,10 +37,22 @@ export function ConfigureProject({ project }: { project: Project }) {
   const [heroCount, setHeroCount] = useState(saved.heroImageCount || 4);
   const [detailCount, setDetailCount] = useState(saved.detailSectionCount || 6);
   const [quality, setQuality] = useState(saved.quality || "auto");
+  const savedSize = saved.imageSettings?.size || "auto";
+  const presetSizes = ["auto", "1024x1024", "1024x1536", "1536x1024"];
+  const [imageSize, setImageSize] = useState(presetSizes.includes(savedSize) ? savedSize : "custom");
+  const [customWidth, setCustomWidth] = useState(Number(String(savedSize).split("x")[0]) || 1536);
+  const [customHeight, setCustomHeight] = useState(Number(String(savedSize).split("x")[1]) || 1024);
+  const [imageBackground, setImageBackground] = useState(saved.imageSettings?.background || "auto");
+  const [imageOutputFormat, setImageOutputFormat] = useState(saved.imageSettings?.outputFormat || "png");
+  const [imageCompression, setImageCompression] = useState(Number(saved.imageSettings?.outputCompression ?? 100));
+  const [imageModeration, setImageModeration] = useState(saved.imageSettings?.moderation || "auto");
   const [category, setCategory] = useState<keyof typeof categoryProfiles | "auto">(snapshot.commerceCategory || "auto");
   const [analyzing, setAnalyzing] = useState(!brief);
   const [error, setError] = useState("");
+  const [uncertain, setUncertain] = useState(false);
+  const [retryUncertain, setRetryUncertain] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [analysisSeconds, setAnalysisSeconds] = useState(0);
   const started = useRef(false);
   const analysisPending = useRef(false);
   const locked = useRef(false);
@@ -49,15 +61,20 @@ export function ConfigureProject({ project }: { project: Project }) {
   async function analyze(force = false, resume = false) {
     if (analysisPending.current) return;
     analysisPending.current = true;
-    setAnalyzing(true); setError("");
+    setAnalyzing(true); setAnalysisSeconds(0); setError("");
     try {
-      const result: Brief = await data(await fetch(`/api/projects/${project.id}/brief`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ force, resume }) }));
+      const result: Brief = await data(await fetch(`/api/projects/${project.id}/brief`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ force, resume, retryUncertain }) }));
       setBrief(result);
       if (!confirmed && !dirty.current.has("name")) setName(result.name);
       if (!confirmed && !dirty.current.has("description")) setDescription(result.description);
-    } catch (e) { setError(e instanceof Error ? e.message : "分析失败"); }
-    finally { analysisPending.current = false; setAnalyzing(false); }
+    } catch (e) { setError(requestErrorMessage(e)); setUncertain(e instanceof ApiRequestError ? e.code === "BRIEF_UNCERTAIN" : true); }
+    finally { analysisPending.current = false; setAnalyzing(false); setRetryUncertain(false); }
   }
+  useEffect(() => {
+    if (!analyzing) return;
+    const timer = window.setInterval(() => setAnalysisSeconds((value) => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [analyzing]);
   useEffect(() => { if (!started.current && !brief) { started.current = true; void analyze(); } }, []);
   async function generate() {
     if (locked.current) return;
@@ -70,9 +87,11 @@ export function ConfigureProject({ project }: { project: Project }) {
         setStyleAssets(previous => [...previous, asset]);
         setStyleFiles(previous => previous.filter(f => f !== file));
       }
-      await data(await fetch(`/api/projects/${project.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, description, platform, modelSnapshot: { ...snapshot, creationBrief: brief, creationConfigured: true, commerceCategory: category, creativePreferences: { version: 2, userDirection: direction }, previewConfig: { ...saved, heroImageCount: heroCount, detailSectionCount: detailCount, contentLanguage: language, imageAspectRatio: "3:4", quality } } }) }));
+      const resolvedSize = imageSize === "custom" ? `${customWidth}x${customHeight}` : imageSize;
+      const imageSettings = { size: resolvedSize, background: imageBackground, outputFormat: imageOutputFormat, outputCompression: imageCompression, moderation: imageModeration };
+      await data(await fetch(`/api/projects/${project.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, description, platform, modelSnapshot: { creationBrief: brief, creationConfigured: true, commerceCategory: category, creativePreferences: { version: 2, userDirection: direction }, previewConfig: { ...saved, heroImageCount: heroCount, detailSectionCount: detailCount, contentLanguage: language, imageAspectRatio: "3:4", quality, imageSettings } } }) }));
       key.current ||= crypto.randomUUID();
-      await data(await fetch(`/api/projects/${project.id}/detail-runs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ idempotencyKey: key.current, language, heroCount, detailCount, quality }) }));
+      await data(await fetch(`/api/projects/${project.id}/detail-runs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ idempotencyKey: key.current, language, heroCount, detailCount, quality, imageSettings }) }));
       router.push(`/projects/${project.id}/editor`);
     } catch (e) { toast.error(e instanceof Error ? e.message : "启动失败"); }
     finally { locked.current = false; setBusy(false); }
@@ -91,12 +110,12 @@ export function ConfigureProject({ project }: { project: Project }) {
       <aside className="space-y-4"><div className="aspect-square overflow-hidden rounded-3xl border bg-card"><img src={productAssets.find(a => a.type === "MAIN")?.url || productAssets[0]?.url} alt="商品主图" className="h-full w-full object-contain"/></div><div className="flex flex-wrap gap-2">{productAssets.filter(a => ["MAIN", "ANGLE", "DETAIL", "REFERENCE"].includes(a.type)).map(a => <img key={a.id} src={a.url} alt="商品素材" className="h-16 w-16 rounded-xl border bg-card object-contain"/>)}</div><p className="text-xs leading-6 text-muted-foreground">分析建议来自图片识别。文字、规格和细节仍可能误读，请结合原图核实后生成。</p></aside>
       <div className="space-y-6">
         <div role="status" className="rounded-2xl border bg-card p-4 text-sm">
-          <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2 font-medium">{analyzing ? <Loader2 className="h-4 w-4 animate-spin"/> : <Sparkles className="h-4 w-4"/>}{analyzing ? "Agent 正在识别商品和建议视觉方向…" : error ? "暂时无法完成分析" : brief && !brief.recognition ? "历史预填，建议重新识别" : "Agent 已预填，可自由调整"}</div>{brief && !error && <Button variant="outline" size="sm" disabled={analyzing || busy} onClick={() => analyze(true)}><RefreshCw className="mr-2 h-3.5 w-3.5"/>重新识别</Button>}</div>
+          <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2 font-medium">{analyzing ? <Loader2 className="h-4 w-4 animate-spin"/> : <Sparkles className="h-4 w-4"/>}{analyzing ? `Agent 正在识别并复核商品… ${analysisSeconds}s` : error ? "暂时无法完成分析" : brief && !brief.recognition ? "历史预填，建议重新识别" : "Agent 已预填，可自由调整"}</div>{brief && !error && <Button variant="outline" size="sm" disabled={analyzing || busy} onClick={() => analyze(true)}><RefreshCw className="mr-2 h-3.5 w-3.5"/>重新识别</Button>}</div>
           {brief?.recognition && <p className="mt-3 break-words text-xs text-muted-foreground">识别模型：{brief.recognition.modelId} · {brief.recognition.imageCount} 张素材 · {brief.recognition.reviewed ? `${brief.recognition.detailViewCount} 个局部视图已复核` : "此结果尚未进行局部复核，建议重新识别"}</p>}
           {!!brief?.recognition?.corrections?.length && <details className="mt-3 text-xs text-muted-foreground"><summary>查看本次复核修正</summary><ul className="mt-2 list-disc space-y-1 pl-4">{brief.recognition.corrections.map((text, i) => <li key={i}>{text}</li>)}</ul></details>}
           {brief && !brief.recognition && <p className="mt-3 text-xs text-muted-foreground">此历史结果未记录识别模型，可点击重新识别。</p>}
           {(confirmed || dirty.current.size > 0) && <p className="mt-2 text-xs text-muted-foreground">重新识别会保留已确认或手动修改的内容。</p>}
-          {error && <div className="mt-3 space-y-3"><p className="text-muted-foreground">{error}</p><Button variant="outline" size="sm" disabled={analyzing || busy} onClick={() => analyze(false, true)}>重试分析</Button><Link href="/settings/providers" className="ml-3 underline">检查 AI 配置</Link></div>}
+          {error && <div className="mt-3 space-y-3"><p className="text-muted-foreground">{error}</p>{uncertain && <label className="flex items-start gap-2"><input type="checkbox" checked={retryUncertain} onChange={e => setRetryUncertain(e.target.checked)}/>重新请求结果不确定的分析，可能产生额外费用（已保存结果会复用）</label>}<Button variant="outline" size="sm" disabled={analyzing || busy || (uncertain && !retryUncertain)} onClick={() => analyze(false, true)}>重试分析</Button><Link href="/settings/providers" className="ml-3 underline">检查 AI 配置</Link></div>}
           {!!brief?.uncertainties.length && <ul className="mt-3 list-disc space-y-1 pl-4 text-muted-foreground">{brief.uncertainties.map((text, i) => <li key={i}>{text}</li>)}</ul>}
         </div>
         <fieldset disabled={busy} className="space-y-5">
@@ -112,7 +131,9 @@ export function ConfigureProject({ project }: { project: Project }) {
             <label className="space-y-2 text-sm">头图数量<Select value={heroCount} onValueChange={v => setHeroCount(Number(v))}>{heroCountOptions.map(n => <option key={n}>{n}</option>)}</Select></label>
             <label className="space-y-2 text-sm">详情图数量<Select value={detailCount} onValueChange={v => setDetailCount(Number(v))}>{detailCountOptions.map(n => <option key={n}>{n}</option>)}</Select></label>
           </div>
-          <label className="block space-y-2 text-sm">图像画质<Select value={quality} onValueChange={setQuality}><option value="auto">自动 · 由模型决定</option><option value="low">低 · 快速预览</option><option value="medium">中 · 平衡质量与速度</option><option value="high">高 · 优先细节表现</option></Select></label>
+          <label className="block space-y-2 text-sm">图像画质<Select value={quality} onValueChange={setQuality}><option value="auto">自动 · 由模型决定</option><option value="low">低 · 快速预览</option><option value="medium">中 · 平衡质量与速度</option><option value="high">高 · 优先细节表现</option><option value="xhigh">XHigh · GPT Image 2.5</option><option value="max">Max · GPT Image 2.5</option></Select></label>
+          <div className="grid gap-3 sm:grid-cols-2"><label className="block space-y-2 text-sm">GPT Image 尺寸<Select value={imageSize} onValueChange={setImageSize}><option value="auto">自动 / 按画面比例</option><option value="1024x1024">1K 方图 · 1024×1024</option><option value="1024x1536">竖图 · 1024×1536</option><option value="1536x1024">横图 · 1536×1024</option><option value="custom">自定义尺寸</option></Select></label><label className="block space-y-2 text-sm">背景<Select value={imageBackground} onValueChange={setImageBackground}><option value="auto">自动</option><option value="opaque">不透明</option><option value="transparent">透明</option></Select></label>{imageSize === "custom" && <><label className="block space-y-2 text-sm">自定义宽度（16 的倍数）<Input type="number" min={16} max={3840} step={16} value={customWidth} onChange={event => setCustomWidth(Number(event.target.value) || 16)} /></label><label className="block space-y-2 text-sm">自定义高度（16 的倍数）<Input type="number" min={16} max={3840} step={16} value={customHeight} onChange={event => setCustomHeight(Number(event.target.value) || 16)} /></label></>}<label className="block space-y-2 text-sm">输出格式<Select value={imageOutputFormat} onValueChange={setImageOutputFormat}><option value="png">PNG</option><option value="jpeg">JPEG</option><option value="webp">WebP</option></Select></label><label className="block space-y-2 text-sm">输出压缩度（0–100）<Input type="number" min={0} max={100} value={imageCompression} onChange={event => setImageCompression(Math.max(0, Math.min(100, Number(event.target.value) || 0)))} /></label><label className="block space-y-2 text-sm">内容审核<Select value={imageModeration} onValueChange={setImageModeration}><option value="auto">自动</option><option value="low">低干预</option></Select></label></div>
+          <p className="text-xs leading-5 text-muted-foreground">GPT Image 2.5 支持 low / medium / high / xhigh / max；GPT Image 2 只支持 low / medium / high。若当前模型是 GPT Image 2，请使用前三档。</p>
           <Button className="h-12 w-full" disabled={analyzing || !brief || name.trim().length < 2 || busy} onClick={generate}>{busy && <Loader2 className="mr-2 h-4 w-4 animate-spin"/>}{busy ? "正在启动…" : `确认并生成 ${heroCount + detailCount} 张图片`}</Button>
           <p className="text-xs leading-6 text-muted-foreground">头图 1:1，详情图 3:4。按画面任务设计图文节奏；每张最多自动修正一次，存疑图片保留并标记。画质影响耗时和费用。</p>
         </fieldset>

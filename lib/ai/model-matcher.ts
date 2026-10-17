@@ -54,7 +54,7 @@ function findPreferredModel(models: ModelDetectionResult[], preferredIds: string
 
 function findGptImage2Model(models: ModelDetectionResult[]) {
   return (
-    findPreferredModel(models, ["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"]) ??
+    findPreferredModel(models, ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"]) ??
     findPreferredModel(models, ["gpt-image-2", "gptimage2"]) ??
     sortByScore(
       models.filter((model) => /^gpt[-_\s]?image[-_\s]?2(?:[-_\s]|$)/i.test(model.modelId)),

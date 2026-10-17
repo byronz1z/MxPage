@@ -755,6 +755,9 @@ export async function retryWorkflowTask(taskId: string, credentials: RequestProv
   }
 
   const input = (task.inputPayload ?? {}) as Record<string, unknown>;
+  if (input.workflow === "image-translation-v1" || input.workflow === "detail-batch-v1") {
+    throw new Error("请在对应批次页面继续或重试此任务。");
+  }
   await prisma.generationTask.update({
     where: { id: taskId },
     data: {

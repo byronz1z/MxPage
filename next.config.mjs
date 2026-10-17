@@ -5,7 +5,8 @@ const nextConfig = {
   output: "standalone",
   distDir,
   experimental: {
-    serverComponentsExternalPackages: ["@openai/agents", "@openai/agents-core", "@openai/agents-openai", "sharp"],
+    ...(distDir === ".next-desktop" ? { cpus: 2 } : {}),
+    serverComponentsExternalPackages: ["sharp"],
     serverActions: {
       bodySizeLimit: "10mb",
     },

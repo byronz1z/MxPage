@@ -49,6 +49,8 @@ async function copyDirectory(sourceDir, targetDir) {
   const entries = await fsp.readdir(sourceDir, { withFileTypes: true });
 
   for (const entry of entries) {
+    if (entry.name === "test-reports" || entry.name === "test-output" || entry.name === "storage" || entry.name.startsWith(".env")) continue;
+    if (/\.(?:db|log)(?:-|$)/i.test(entry.name)) continue;
     const sourcePath = path.join(sourceDir, entry.name);
     const targetPath = path.join(targetDir, entry.name);
     if (entry.isDirectory()) {
@@ -87,6 +89,8 @@ async function prepareStandaloneBundle() {
   for (const name of await fsp.readdir(standaloneRoot)) {
     if (name.startsWith(".env")) await removePath(path.join(standaloneRoot, name));
   }
+  await removePath(path.join(standaloneRoot, "storage"));
+  await removePath(path.join(standaloneRoot, "test-output"));
 
   await removePath(path.join(standaloneRoot, ".next", "static"));
   await removePath(path.join(standaloneRoot, desktopDistDirName, "static"));

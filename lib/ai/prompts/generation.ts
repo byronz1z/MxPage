@@ -5,6 +5,7 @@ import {
   normalizeContentLanguage,
   type ContentLanguage,
 } from "@/lib/utils/content-language";
+import { buildCommerceSystemPrompt, inferCommerceScenes } from "@/lib/ai/prompts/ecommerce-system";
 
 function buildReferenceText(referenceAssets: ProductAsset[]) {
   if (!referenceAssets.length) {
@@ -77,9 +78,11 @@ export function buildSectionImagePrompt(
   aspectRatio: "1:1" | "3:4" | "9:16" = "9:16",
   contentLanguage: ContentLanguage = "zh-CN",
   generationRequirements?: string | null,
+  platform = "general_ecommerce",
 ) {
   return [
     "You are a senior e-commerce key-visual designer creating marketplace-ready product artwork.",
+    buildCommerceSystemPrompt(platform, inferCommerceScenes(String(section.type), section.title, section.goal)),
     `Section type: ${section.type}`,
     `Section title: ${section.title}`,
     `Section goal: ${section.goal}`,
@@ -104,9 +107,10 @@ export function buildRegenerationPrompt(
   aspectRatio: "1:1" | "3:4" | "9:16" = "9:16",
   contentLanguage: ContentLanguage = "zh-CN",
   generationRequirements?: string | null,
+  platform = "general_ecommerce",
 ) {
   return [
-    buildSectionImagePrompt(section, referenceAssets, aspectRatio, contentLanguage, generationRequirements),
+    buildSectionImagePrompt(section, referenceAssets, aspectRatio, contentLanguage, generationRequirements, platform),
     "This is a regeneration task. Keep the same product identity and selling-point direction, but improve composition accuracy, completion quality, and conversion appeal.",
   ].join("\n");
 }
@@ -118,6 +122,7 @@ export function buildImageEditPrompt(
   aspectRatio: "1:1" | "3:4" | "9:16" = "9:16",
   contentLanguage: ContentLanguage = "zh-CN",
   generationRequirements?: string | null,
+  platform = "general_ecommerce",
 ) {
   const targetLanguage = contentLanguageNamesForPrompt[normalizeContentLanguage(contentLanguage)];
   const modeInstruction =
@@ -128,7 +133,7 @@ export function buildImageEditPrompt(
         : "This is a repaint task. Use the current image as the base, keep the same product identity, and redesign the composition, atmosphere, styling, and conversion emphasis according to the section goal.";
 
   return [
-    buildSectionImagePrompt(section, referenceAssets, aspectRatio, contentLanguage, generationRequirements),
+    buildSectionImagePrompt(section, referenceAssets, aspectRatio, contentLanguage, generationRequirements, platform),
     modeInstruction,
     "The current section image must be treated as the editable base image.",
     "Keep the product identical to the uploaded main product image and do not replace it with a different item.",

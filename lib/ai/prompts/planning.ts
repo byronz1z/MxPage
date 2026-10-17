@@ -7,6 +7,7 @@ import {
   type StyleOption,
 } from "@/types/domain";
 import { contentLanguageNamesForPrompt, normalizeContentLanguage, type ContentLanguage } from "@/lib/utils/content-language";
+import { buildCommerceSystemPrompt } from "@/lib/ai/prompts/ecommerce-system";
 
 const sectionTypeGuide = Object.entries(sectionTypeLabels)
   .map(([key, label]) => `${key}=${label}`)
@@ -54,6 +55,7 @@ export function buildSectionPlanningPrompt(
     `Platform: ${platformLabel}`,
     `Style: ${styleLabel}`,
     `Target content language: ${targetLanguage}`,
+    buildCommerceSystemPrompt(platform, ["hero_search", "feature_proof", "lifestyle", "material_closeup", "specification", "trust", "summary"]),
     "Create a mobile product-detail section plan based on the planning context below.",
     "Return strict JSON only.",
     "First define one project-level visualStyleGuide, then create all sections under that same visual system.",
@@ -142,6 +144,7 @@ export function buildVisualStyleGuidePrompt(
     `Platform: ${platformLabel}`,
     `Requested style: ${styleLabel}`,
     `Target content language: ${targetLanguage}`,
+    buildCommerceSystemPrompt(platform, ["hero_search", "feature_proof", "lifestyle", "material_closeup", "specification", "trust", "summary"]),
     "Create one project-level visualStyleGuide that keeps hero images and detail-page images visually consistent while still allowing different section content.",
     "The guide must be practical for image generation prompts, specific to this exact product, and written in concise Chinese.",
     "Do not make a generic moodboard. Specify repeatable rules: colors, background, light, camera, typography, layout density, props, product rendering and negative constraints.",

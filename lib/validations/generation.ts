@@ -7,4 +7,5 @@ export const generationRequestSchema = z.object({
   referenceAssetIds: z.array(z.string()).optional().default([]),
   editMode: z.enum(["repaint", "enhance", "translate"]).optional().default("repaint"),
   targetLanguage: z.enum(contentLanguageOptions).optional(),
+  instruction: z.string().trim().max(4000).optional(),
 });

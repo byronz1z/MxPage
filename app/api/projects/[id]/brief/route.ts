@@ -6,9 +6,10 @@ import { withProviderCredentials } from "@/lib/services/provider-runtime";
 import { fail, handleRouteError, ok } from "@/lib/utils/route";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 300;
 export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const options = z.object({ force: z.boolean().optional(), resume: z.boolean().optional() }).parse(await request.json().catch(() => ({})));
+    const options = z.object({ force: z.boolean().optional(), resume: z.boolean().optional(), initialOnly: z.boolean().optional(), retryUncertain: z.boolean().optional() }).parse(await request.json());
     return await withProviderCredentials(request, async () => ok(await prepareBrief(params.id, options)));
   }
   catch (error) {

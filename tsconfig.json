@@ -40,6 +40,10 @@
     ".next-desktop/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "dist-desktop",
+    "test-output",
+    ".next-desktop/standalone",
+    ".next/standalone"
   ]
 }

@@ -1,0 +1,112 @@
+name: Desktop release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the tested package version as a GitHub Release
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run prisma:generate
+      - run: npm test
+      - name: Check tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: node -e "if(process.env.GITHUB_REF_NAME !== 'v' + require('./package.json').version) process.exit(1)"
+
+  package:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: windows
+            arch: x64
+            flags: --win zip --x64
+          - os: macos-15
+            platform: macos
+            arch: arm64
+            flags: --mac zip --arm64
+          - os: macos-15-intel
+            platform: macos
+            arch: x64
+            flags: --mac zip --x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      NEXT_TELEMETRY_DISABLED: "1"
+      DATABASE_URL: file:./build.db
+      APP_SECRET: isolated-release-build-secret
+      STORAGE_ROOT: ./build-storage
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          architecture: ${{ matrix.arch }}
+          cache: npm
+      - run: npm ci
+      - run: npm run prisma:migrate
+      - run: npm run build:desktop
+      - run: npx --no-install electron-builder ${{ matrix.flags }} --publish never
+      - run: npm run smoke:desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist-desktop/MxPage-*.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/') || inputs.publish
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          merge-multiple: true
+          path: release
+      - name: Verify assets and create checksums
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          for platform in windows-x64 macos-arm64 macos-x64; do
+            test -s "release/MxPage-${version}-${platform}.zip"
+          done
+          cd release
+          sha256sum MxPage-*.zip > SHA256SUMS.txt
+      - name: Publish tested desktop packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v$(node -p "require('./package.json').version")"
+          gh release create "$tag" release/*.zip release/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" --draft --title "MxPage $tag · 确定性工作流与跨平台绿色版" \
+            --notes-file "docs/releases/$tag.md"
+          gh release edit "$tag" --draft=false --latest

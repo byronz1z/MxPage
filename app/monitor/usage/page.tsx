@@ -1,8 +1,13 @@
 import { Select } from "@/components/ui/select";
-import { Activity, AlertTriangle, Clock3, Coins, Filter, ImageIcon, RefreshCcw, Sparkles } from "lucide-react";
+import { Activity, AlertTriangle, CheckCircle2, Clock3, Coins, Filter, RefreshCcw } from "lucide-react";
 import Link from "next/link";
 
 import { ClearUsageButton } from "@/components/monitor/clear-usage-button";
+import { BillingSettings } from "@/components/monitor/billing-settings";
+import { RefreshUsageButton, UsageCharts } from "@/components/monitor/usage-charts";
+import { getBillingRules } from "@/lib/monitor/billing-settings";
+import { billingSourceLabels } from "@/lib/monitor/billing";
+import { formatCostCny } from "@/lib/monitor/currency";
 import { DeleteUsageEntryButton } from "@/components/monitor/delete-usage-entry-button";
 import { PageHeader } from "@/components/shared/page-header";
 import { Badge } from "@/components/ui/badge";
@@ -64,7 +69,8 @@ export default async function ApiUsageMonitorPage({
 }: {
   searchParams?: Record<string, string | string[] | undefined>;
 }) {
-  const hours = Number(readSingle(searchParams?.hours) ?? "24");
+  const requestedHours = Number(readSingle(searchParams?.hours) ?? "24");
+  const hours = Number.isFinite(requestedHours) ? Math.max(1, Math.min(24 * 30, requestedHours)) : 24;
   const projectId = readSingle(searchParams?.projectId) ?? "all";
   const category = readSingle(searchParams?.category) ?? "all";
   const quotaState = readSingle(searchParams?.quotaState) ?? "all";
@@ -83,7 +89,8 @@ export default async function ApiUsageMonitorPage({
   });
 
   const allProjectIds = [
-    ...summary.topProjects.map((item) => item.projectId),
+    ...summary.charts.projects.map((item) => item.key),
+    ...(projectId !== "all" ? [projectId] : []),
     ...summary.recentEntries.map((entry) => entry.projectId).filter(Boolean),
   ].filter((value): value is string => Boolean(value) && value !== "unassigned");
 
@@ -95,51 +102,47 @@ export default async function ApiUsageMonitorPage({
     : [];
   const projectNames = new Map(projects.map((item) => [item.id, item.name]));
 
-  const filterProjectOptions = summary.topProjects.filter((item) => item.projectId !== "unassigned");
+  const filterProjectOptions = [...new Set(allProjectIds)];
+  const billingRules = await getBillingRules();
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-5">
       <PageHeader
         eyebrow="API 监控"
-        title="调用、额度与重试监控"
-        description="这里展示最近窗口内的 AI / 图像请求、成功失败、额度状态，以及同一次逻辑调用下的内部重试聚合结果。"
+        title="API 用量总览"
+        description="观察调用趋势、费用与响应表现，快速定位高用量模型和失败请求。"
+        actions={<><RefreshUsageButton /><ClearUsageButton /></>}
       />
 
-      <div className="flex justify-end">
-        <ClearUsageButton />
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>筛选器</CardTitle>
-          <CardDescription>按时间、项目、调用类型和状态快速定位高花费或高失败链路。</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form className="grid gap-4 md:grid-cols-2 xl:grid-cols-5" method="GET">
-            <label className="space-y-2 text-sm">
+      <Card className="rounded-2xl">
+        <CardContent className="overflow-x-auto p-4">
+          <form aria-label="监控筛选" className="grid min-w-[780px] grid-cols-[1fr_1.4fr_1fr_0.85fr_1fr_auto] items-end gap-3" method="GET">
+            <label className="min-w-0 space-y-1.5 text-xs">
               <span className="text-muted-foreground">时间范围</span>
-              <Select name="hours" defaultValue={String(hours)}>
+              <Select aria-label="时间范围" className="h-9 text-xs" name="hours" defaultValue={String(hours)}>
                 <option value="1">最近 1 小时</option>
                 <option value="6">最近 6 小时</option>
                 <option value="24">最近 24 小时</option>
                 <option value="72">最近 3 天</option>
                 <option value="168">最近 7 天</option>
+                <option value="720">最近 30 天</option>
+                {![1, 6, 24, 72, 168, 720].includes(hours) && <option value={String(hours)}>最近 {hours} 小时</option>}
               </Select>
             </label>
-            <label className="space-y-2 text-sm">
+            <label className="min-w-0 space-y-1.5 text-xs">
               <span className="text-muted-foreground">项目</span>
-              <Select name="projectId" defaultValue={projectId}>
+              <Select aria-label="项目" className="h-9 text-xs" name="projectId" defaultValue={projectId}>
                 <option value="all">全部项目</option>
-                {filterProjectOptions.map((item) => (
-                  <option key={item.projectId} value={item.projectId}>
-                    {projectLabel(item.projectId, projectNames)}
+                {filterProjectOptions.map((id) => (
+                  <option key={id} value={id}>
+                    {projectLabel(id, projectNames)}
                   </option>
                 ))}
               </Select>
             </label>
-            <label className="space-y-2 text-sm">
+            <label className="min-w-0 space-y-1.5 text-xs">
               <span className="text-muted-foreground">调用类型</span>
-              <Select name="category" defaultValue={category}>
+              <Select aria-label="调用类型" className="h-9 text-xs" name="category" defaultValue={category}>
                 <option value="all">全部类型</option>
                 <option value="models">模型列表</option>
                 <option value="chat">文本生成</option>
@@ -149,17 +152,17 @@ export default async function ApiUsageMonitorPage({
                 <option value="google_generate_content">Google 图像协议</option>
               </Select>
             </label>
-            <label className="space-y-2 text-sm">
+            <label className="min-w-0 space-y-1.5 text-xs">
               <span className="text-muted-foreground">状态</span>
-              <Select name="success" defaultValue={success}>
+              <Select aria-label="状态" className="h-9 text-xs" name="success" defaultValue={success}>
                 <option value="all">全部状态</option>
                 <option value="success">仅成功</option>
                 <option value="failed">仅失败</option>
               </Select>
             </label>
-            <label className="space-y-2 text-sm">
+            <label className="min-w-0 space-y-1.5 text-xs">
               <span className="text-muted-foreground">额度 / 限流</span>
-              <Select name="quotaState" defaultValue={quotaState}>
+              <Select aria-label="额度 / 限流" className="h-9 text-xs" name="quotaState" defaultValue={quotaState}>
                 <option value="all">全部</option>
                 <option value="spending_limited">额度已满</option>
                 <option value="rate_limited">限流</option>
@@ -168,11 +171,11 @@ export default async function ApiUsageMonitorPage({
                 <option value="ok">正常</option>
               </Select>
             </label>
-            <div className="md:col-span-2 xl:col-span-5 flex justify-end">
+            <div className="flex justify-end">
               <input type="hidden" name="page" value="1" />
               <button
                 type="submit"
-                className="inline-flex h-10 items-center rounded-xl bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 active:scale-[0.98]"
+                className="inline-flex h-9 shrink-0 items-center whitespace-nowrap rounded-xl bg-primary px-3 text-xs font-medium text-primary-foreground transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               >
                 <Filter className="mr-2 h-4 w-4" />
                 应用筛选
@@ -182,12 +185,13 @@ export default async function ApiUsageMonitorPage({
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Card>
           <CardContent className="flex items-center justify-between pt-6">
             <div>
               <p className="text-sm text-muted-foreground">总调用</p>
               <p className="mt-2 text-3xl font-semibold">{summary.totalRequests}</p>
+              <p className="mt-1 text-xs text-muted-foreground">图像 {summary.imageRequests} 次 · 文本 {summary.chatRequests} 次</p>
             </div>
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-100 dark:bg-white/8">
               <Activity className="h-5 w-5 text-slate-700 dark:text-slate-200" />
@@ -197,100 +201,57 @@ export default async function ApiUsageMonitorPage({
         <Card>
           <CardContent className="flex items-center justify-between pt-6">
             <div>
-              <p className="text-sm text-muted-foreground">图像调用</p>
-              <p className="mt-2 text-3xl font-semibold">{summary.imageRequests}</p>
+              <p className="text-sm text-muted-foreground">成功率</p>
+              <p className="mt-2 text-3xl font-semibold">{summary.totalRequests ? `${(summary.successRequests / summary.totalRequests * 100).toFixed(1)}%` : "—"}</p>
+              <p className="mt-1 text-xs text-muted-foreground">成功 {summary.successRequests} 次 · 失败 {summary.failedRequests} 次</p>
             </div>
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-sky-50 dark:bg-sky-500/10">
-              <ImageIcon className="h-5 w-5 text-sky-600 dark:text-sky-300" />
+              <CheckCircle2 className="h-5 w-5 text-sky-600 dark:text-sky-300" />
             </div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="flex items-center justify-between pt-6">
             <div>
-              <p className="text-sm text-muted-foreground">失败次数</p>
-              <p className="mt-2 text-3xl font-semibold">{summary.failedRequests}</p>
+              <p className="text-sm text-muted-foreground">平均响应耗时</p>
+              <p className="mt-2 text-3xl font-semibold">{summary.totalRequests ? `${(summary.averageDurationMs / 1000).toFixed(1)}s` : "—"}</p>
+              <p className="mt-1 text-xs text-muted-foreground">P95 {summary.totalRequests ? `${(summary.charts.p95DurationMs / 1000).toFixed(1)}s` : "—"} · 含失败请求</p>
             </div>
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-amber-50 dark:bg-amber-500/10">
-              <AlertTriangle className="h-5 w-5 text-amber-600 dark:text-amber-300" />
+              <Clock3 className="h-5 w-5 text-amber-600 dark:text-amber-300" />
             </div>
           </CardContent>
         </Card>
         <Card>
-          <CardContent className="flex items-center justify-between pt-6">
+          <CardContent className="flex items-start justify-between gap-2 pt-6">
             <div>
-              <p className="text-sm text-muted-foreground">额度 / 限流告警</p>
-              <p className="mt-2 text-3xl font-semibold">
-                {summary.spendingLimitedRequests + summary.rateLimitedRequests}
-              </p>
-            </div>
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-rose-50 dark:bg-rose-500/10">
-              <Sparkles className="h-5 w-5 text-rose-600 dark:text-rose-300" />
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="flex items-center justify-between pt-6">
-            <div>
-              <p className="text-sm text-muted-foreground">已记录费用</p>
-              <p className="mt-2 text-3xl font-semibold">
-                {summary.costSamples > 0 ? `$${summary.actualCostUsd.toFixed(4)}` : "--"}
+              <p className="text-sm text-muted-foreground">已记录费用（含估算）</p>
+              <p className="mt-2 break-all text-3xl font-semibold tabular-nums">
+                {summary.costSamples + summary.estimatedCostSamples > 0 ? formatCostCny(summary.recordedCostUsd, billingRules.usdToCny) : "—"}
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                {summary.costSamples > 0 ? `来自 ${summary.costSamples} 条 cost 样本` : "代理商未返回账单字段"}
+                接口 {formatCostCny(summary.actualCostUsd, billingRules.usdToCny)} · 估算 {formatCostCny(summary.estimatedCostUsd, billingRules.usdToCny)}
               </p>
+              <p className="mt-1 text-xs text-muted-foreground">另有 {summary.unknownCostSamples} 条未计价，未计入总额</p>
             </div>
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-emerald-50 dark:bg-emerald-500/10">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-50 dark:bg-emerald-500/10">
               <Coins className="h-5 w-5 text-emerald-600 dark:text-emerald-300" />
             </div>
           </CardContent>
         </Card>
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
-        <Card>
-          <CardHeader>
-            <CardTitle>项目分布</CardTitle>
-            <CardDescription>帮助你快速看出最近是哪些项目最热、最频繁。</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {summary.topProjects.length === 0 ? (
-              <p className="text-sm text-muted-foreground">暂时还没有项目级调用记录。</p>
-            ) : (
-              summary.topProjects.map((item) => (
-                <div key={item.projectId} className="flex items-center justify-between rounded-2xl border border-border px-4 py-3">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{projectLabel(item.projectId, projectNames)}</p>
-                    <p className="text-xs text-muted-foreground">{item.projectId}</p>
-                  </div>
-                  <Badge variant="outline">{item.count} 次</Badge>
-                </div>
-              ))
-            )}
-          </CardContent>
-        </Card>
+      {summary.spendingLimitedRequests + summary.rateLimitedRequests > 0 && (
+        <div role="status" className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800 dark:border-amber-400/25 dark:bg-amber-400/10 dark:text-amber-200">
+          <AlertTriangle aria-hidden="true" className="h-4 w-4 shrink-0" />
+          当前筛选范围：{summary.spendingLimitedRequests} 次额度不足，{summary.rateLimitedRequests} 次限流。可通过上方筛选查看明细。
+        </div>
+      )}
 
-        <Card>
-          <CardHeader>
-            <CardTitle>高频模型</CardTitle>
-            <CardDescription>最近窗口内调用最频繁的模型。</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {summary.topModels.length === 0 ? (
-              <p className="text-sm text-muted-foreground">暂时还没有调用记录。</p>
-            ) : (
-              summary.topModels.map((item) => (
-                <div key={item.model} className="flex items-center justify-between rounded-2xl border border-border px-4 py-3">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{item.model}</p>
-                  </div>
-                  <Badge variant="outline">{item.count} 次</Badge>
-                </div>
-              ))
-            )}
-          </CardContent>
-        </Card>
-      </div>
+      <p className="text-xs text-muted-foreground">费用单位：人民币（CNY） · 按 1 USD = {billingRules.usdToCny} CNY 估算折合，可在计费规则中调整汇率。</p>
+      <UsageCharts key={`${hours}-${projectId}-${category}-${quotaState}-${success}`} data={summary.charts} projectNames={Object.fromEntries(projectNames)} usdToCny={billingRules.usdToCny} />
+
+      <BillingSettings initialRules={billingRules}/>
 
       <Card>
         <CardHeader>
@@ -343,13 +304,15 @@ export default async function ApiUsageMonitorPage({
                     </p>
                   </div>
                   <div className="min-w-0">
-                    <p className="text-muted-foreground">用量</p>
+                    <p className="text-muted-foreground">用量与费用</p>
                     <p className="break-words font-medium">
-                      {entry.totalTokens !== null ? `${entry.totalTokens} tokens` : "无 tokens"}
-                      {entry.actualCostUsd !== null ? ` / $${entry.actualCostUsd.toFixed(6)}` : ""}
+                      {entry.totalTokens !== null ? `${entry.totalTokens} tokens` : "未返回 tokens"}
                     </p>
+                    <p className="mt-1 font-semibold">{formatCostCny(entry.billing?.costUsd, billingRules.usdToCny, 6)} <span className="text-xs font-normal text-muted-foreground">{billingSourceLabels[entry.billing?.source || "unknown"]}</span></p>
                   </div>
                 </div>
+
+                {entry.billing && <details className="mt-3 rounded-xl bg-muted/30 p-3 text-xs text-muted-foreground"><summary className="cursor-pointer">计费依据 · {billingSourceLabels[entry.billing.source]}</summary><div className="mt-2 space-y-2">{entry.billing.notes.map((note,i) => <p key={i}>{note}</p>)}<p>人民币费用按 1 USD = {billingRules.usdToCny} CNY 折算。</p>{entry.billing.tokens && <p>参与估算的 tokens：{Object.entries(entry.billing.tokens).map(([key,value]) => `${key}=${value}`).join(" · ")}</p>}{entry.billing.rates && <p>折合单价（人民币 / 100 万 tokens）：{Object.entries(entry.billing.rates).map(([key,value]) => `${key}=${formatCostCny(value, billingRules.usdToCny)}`).join(" · ")}</p>}</div></details>}
 
                 <div className="mt-3 space-y-2 text-xs text-muted-foreground">
                   <p className="flex items-start gap-2 break-all">
