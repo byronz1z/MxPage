@@ -218,9 +218,7 @@ tests/                  隔离的单元及流程测试
 
 **灵矩绘境 · MxPage（MatrixInspire）** · Copyright © 2026 灵矩绘境。源码采用 [MIT](LICENSE)；素材及生成结果仍需遵守各自的权利与模型服务条款。
 
-<details>
-<summary>交流社区</summary>
 
+<summary>交流社区</summary>
 <img width="360" alt="MxPage 交流二维码" src="https://github.com/user-attachments/assets/028cfd0b-a813-4655-9b49-aa9ab6619c7d" />
 
-</details>
