@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildSupplementalSubmission, missingFieldSchema, normalizeSupplementalQuestions, resolveSupplementalSubmission, supplementalQuestionSetId, supplementalQuestionsFromFields, supplementalQuestionsReady, supplementalQuestionIssues } from "../lib/detail-runs/supplemental-input";
+import { buildSupplementalSubmission, incompleteSupplementalEstimates, missingFieldSchema, normalizeSupplementalQuestions, resolveSupplementalSubmission, supplementalQuestionSetId, supplementalQuestionsFromFields, supplementalQuestionsReady, supplementalQuestionIssues } from "../lib/detail-runs/supplemental-input";
 
 const fields = [
   { field: "material", question: "商品材质是什么？", blocking: true, options: ["陶瓷", "玻璃", "不锈钢"] },
@@ -68,6 +68,34 @@ test("specification choices must answer every requested quantity with values and
   numeric.options = ["水箱约300 mL；净重约350 g", specific[1], specific[2]];
   assert.equal(supplementalQuestionsReady(candidate), false, "A complete capacity value cannot mask a missing dimension");
   assert.equal(buildSupplementalSubmission(candidate, {}), null);
+});
+
+test("size tables can declare a shared unit in the question and preserve it on submission", () => {
+  const options = ["S：胸围104、衣长70；M：胸围110、衣长72", "S：胸围108、衣长72；M：胸围114、衣长74", "S：胸围112、衣长74；M：胸围118、衣长76"];
+  for (const declaration of ["单位为cm", "单位：厘米", "单位（cm）", "单位均为 cm", "units: cm"]) {
+    const candidate = [{ ...questions[0], text: `尺码与成衣尺寸，${declaration}，数值均为约值。`, fields: ["尺码与成衣尺寸"], options }, ...questions.slice(1)];
+    assert.equal(supplementalQuestionIssues(candidate, ["尺码与成衣尺寸"]), null, declaration);
+    const payload = buildSupplementalSubmission(candidate, selected())!;
+    const answers = resolveSupplementalSubmission(candidate, payload);
+    assert.equal(answers[0].answer, `${options[0]}（单位：${declaration.includes("厘米") ? "厘米" : "cm"}）`);
+    assert.equal(answers[0].basis, "model_estimate");
+    assert.deepEqual(incompleteSupplementalEstimates(answers), []);
+    assert.deepEqual(candidate[0].options, options, "Validation never rewrites saved options");
+    const custom = buildSupplementalSubmission(candidate, { ...selected(), [candidate[0].id]: { mode: "custom", customText: "尚未测量" } })!;
+    assert.equal(resolveSupplementalSubmission(candidate, custom)[0].answer, "尚未测量");
+  }
+});
+
+test("shared units do not excuse absent numbers, unrelated quantities or mixed units", () => {
+  const card = { ...questions[0], text: "成衣尺寸，单位为cm。", fields: ["尺寸"], options: ["胸围104、衣长70", "胸围110、衣长72", "胸围116、衣长74"] };
+  for (const invalid of [
+    { ...card, options: ["胸围、衣长", ...card.options.slice(1)] },
+    { ...card, text: "成衣尺寸，参考款衣长70 cm。" },
+    { ...card, text: "成衣尺寸，单位为kg。" },
+    { ...card, options: ["重量350 g", ...card.options.slice(1)] },
+    { ...card, fields: ["尺寸", "重量"], text: "尺寸与重量，单位为cm。" },
+    { ...card, options: ["胸围约104 cm", "胸围、衣长", "胸围、肩宽"] },
+  ]) assert.equal(supplementalQuestionsReady([invalid, ...questions.slice(1)]), false);
 });
 
 test("server resolves saved choices and rejects blank, invalid, incomplete, duplicate or stale submissions", () => {

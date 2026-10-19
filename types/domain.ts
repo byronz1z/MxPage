@@ -133,6 +133,8 @@ export type CapabilityMap = Record<CapabilityKey, boolean> & {
 export type ModelRoleMap = Record<ModelRoleKey, boolean>;
 
 export interface ProviderConnectionInput {
+  textProtocol?: "auto" | "chat_completions" | "responses" | "anthropic_messages" | "gemini_native";
+  structuredOutputMode?: "json_schema" | "json_object" | "prompt_json";
   name: string;
   baseUrl: string;
   apiKey: string;

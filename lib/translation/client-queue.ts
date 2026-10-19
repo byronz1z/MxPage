@@ -2,6 +2,7 @@ import { createStore } from "zustand/vanilla";
 import { fileToBase64Payload } from "@/lib/utils/base64-upload";
 import type { ContentLanguage } from "@/lib/utils/content-language";
 import { taskNeedsAttention } from "@/lib/tasks/queue";
+import { uploadDrafts, type UploadDraftStore, type UploadDraft } from "./upload-drafts";
 
 export type TranslationBatch = {
   id: string; status: string; error?: string | null;
@@ -36,10 +37,12 @@ export function translationShouldShow(entry: QueueEntry) {
 export function createTranslationQueue(deps: {
   fetcher?: typeof fetch; readFile?: typeof fileToBase64Payload;
   storage?: Pick<Storage, "getItem" | "setItem">; uuid?: () => string;
+  drafts?: UploadDraftStore;
 } = {}) {
   const store = createStore<{ entries: QueueEntry[]; expanded: boolean }>(() => ({ entries: [], expanded: true }));
   const storage = () => deps.storage ?? window.localStorage;
-  const jobs = new Map<string, { input: TranslationSubmission; projects: Array<{ id: string; uploaded: number }> }>();
+  const jobs = new Map<string, UploadDraft>();
+  const drafts = deps.drafts ?? uploadDrafts;
   const polling = new Set<string>();
   const epochs = new Map<string, number>();
   let hydrated = false;
@@ -51,7 +54,7 @@ export function createTranslationQueue(deps: {
     store.setState(state => ({ entries: state.entries.map(entry => entry.id === id ? { ...entry, ...patch } : entry) }));
   }
   async function request(url: string, body?: unknown) {
-    const response = await (deps.fetcher ?? fetch)(url, body === undefined ? { cache: "no-store" } : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const response = await (deps.fetcher ?? fetch)(url, body === undefined ? { cache: "no-store", signal: AbortSignal.timeout(30000) } : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(60000) });
     const result = await response.json();
     if (!response.ok || !result.success) throw Object.assign(new Error(result.error?.message || "请求失败"), { status: response.status });
     return result.data;
@@ -70,11 +73,23 @@ export function createTranslationQueue(deps: {
       const title = current.title === "详情页翻译" && batch.items[0]?.name ? batch.items[0].name : current.title;
       const total = Math.max(current.total, batch.items.reduce((n, item) => n + (item.translationProgress?.total ?? item.images.length), 0));
       jobs.delete(id);
+      void drafts.remove(id).catch(() => undefined);
       update(id, { batch, title, total, phase: "tracking", error: undefined, message: "", canRetryUpload: false });
       if (title !== current.title || total !== current.total) persist();
     } catch (error) {
       if ((epochs.get(id) || 0) !== epoch) return;
       const missing = (error as { status?: number }).status === 404;
+      if (missing) {
+        try {
+          const draft = await drafts.get(id);
+          if (draft && get(id)) {
+            jobs.set(id, draft);
+            update(id, { uploaded: draft.projects.reduce((n, p) => n + p.uploaded, 0), uploadTotal: draft.input.groups.reduce((n, g) => n + g.files.length, 0) });
+            await upload(id);
+            return;
+          }
+        } catch { update(id, { phase: "error", error: "无法读取本地上传草稿，请检查浏览器存储后刷新。" }); return; }
+      }
       update(id, { ...(missing ? { phase: "error" as const } : {}), error: missing ? "任务尚未提交或已删除。若上传时刷新了浏览器，请重新选择原图。" : "暂时无法读取进度，任务不会因此停止；正在重新连接。" });
     } finally { polling.delete(id); }
   }
@@ -107,26 +122,28 @@ export function createTranslationQueue(deps: {
     epochs.set(id, (epochs.get(id) || 0) + 1);
     update(id, { phase: "uploading", busy: true, error: undefined, canRetryUpload: false });
     try {
+      // Save original Files before any remote writes. Replayed uploads use stable keys.
+      await drafts.put(id, job);
       for (const [index, group] of job.input.groups.entries()) {
         update(id, { message: `上传原图 · ${group.name}` });
         let project = job.projects[index];
         if (!project) {
-          const created = await request("/api/projects", { name: group.name.slice(0, 80).padEnd(2, "商品"), platform: "general_ecommerce", style: "generic_clean", description: job.input.instruction });
+          const created = await request("/api/projects", { name: group.name.slice(0, 80).padEnd(2, "商品"), platform: "general_ecommerce", style: "generic_clean", description: job.input.instruction, translationUpload: { batchId: id, groupIndex: index } });
           project = { id: created.id, uploaded: 0 }; job.projects[index] = project;
+          await drafts.put(id, job);
         }
-        const response = await (deps.fetcher ?? fetch)(`/api/projects/${project.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ modelSnapshot: { workType: "translation" } }) });
-        const patched = await response.json();
-        if (!response.ok || !patched.success) throw new Error(patched.error?.message || "保存翻译项目失败");
         for (let i = project.uploaded; i < group.files.length; i++) {
-          await request(`/api/projects/${project.id}/assets/upload`, { type: i === 0 ? "MAIN" : "ANGLE", ...await (deps.readFile ?? fileToBase64Payload)(group.files[i]) });
+          await request(`/api/projects/${project.id}/assets/upload`, { type: i === 0 ? "MAIN" : "ANGLE", uploadKey: `${id}:${index}:${i}`, ...await (deps.readFile ?? fileToBase64Payload)(group.files[i]) });
           project.uploaded = i + 1;
+          await drafts.put(id, job);
           update(id, { uploaded: job.projects.reduce((n, p) => n + p.uploaded, 0) });
         }
       }
       update(id, { message: "原图已上传，正在提交翻译任务…" });
-      const batch = await request("/api/detail-batches", { id, projectIds: job.projects.map(p => p.id), translations: job.input.languages, translationInstruction: job.input.instruction, options: { language: "zh-CN", quality: job.input.quality } });
+      const batch = await request("/api/detail-batches", { id, projectIds: job.projects.map(p => p.id), translations: job.input.languages, reuseTranslationSources: true, translationInstruction: job.input.instruction, options: { language: "zh-CN", quality: job.input.quality } });
       update(id, { batch, phase: "tracking", message: "", busy: false });
       jobs.delete(id); // Release original Files after the server accepts the task.
+      void drafts.remove(id).catch(() => undefined);
     } catch (error) {
       update(id, { phase: "error", busy: false, canRetryUpload: true, error: error instanceof Error ? error.message : "上传或提交失败" });
     }
@@ -152,6 +169,7 @@ export function createTranslationQueue(deps: {
   function remove(id: string) {
     if (get(id) && (queueIsActive(get(id)!) || get(id)!.busy)) return;
     jobs.delete(id);
+    void drafts.remove(id).catch(() => undefined);
     store.setState(state => ({ entries: state.entries.filter(entry => entry.id !== id) })); persist();
   }
   return { store, enqueue, hydrate, watch: (id: string, title?: string) => { hydrate(); watch(id, title); }, refresh, control, remove, retryUpload: upload,

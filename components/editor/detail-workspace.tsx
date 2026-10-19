@@ -22,12 +22,13 @@ import { platformLabels } from "@/types/domain";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { fileToBase64Payload } from "@/lib/utils/base64-upload";
+import { validateUploadFiles } from "@/lib/storage/upload-limits";
 import { contentLanguageOptions, contentLanguageLabels } from "@/lib/utils/content-language";
 import type { RunCheckpoint } from "@/lib/detail-runs/contracts";
 import { designIssueLabel } from "@/lib/detail-runs/art-direction";
 import { ApiRequestError, fetchApiProgress, readApiResponse as read, requestErrorMessage } from "@/lib/utils/request-error";
 
-type Run = { createdAt?: string; updatedAt?: string; id: string; status: string; stage: string; error?: string; draining?: boolean; timingHistory?: TimingHistoryEntry[]; checkpoint: RunCheckpoint & { workflowVersion?: number; setReviewAssetIds?: string[]; requests?: Record<string, { state: string }>; requestTimings?: Record<string, RequestTiming> } };
+type Run = { createdAt?: string; updatedAt?: string; id: string; status: string; stage: string; error?: string; draining?: boolean; input?: { heroCount?: number; detailCount?: number }; timingHistory?: TimingHistoryEntry[]; checkpoint: RunCheckpoint & { workflowVersion?: number; setReviewAssetIds?: string[]; requests?: Record<string, { state: string; upstreamTask?: import("@/lib/ai/provider-client").UpstreamImageTask }>; requestTimings?: Record<string, RequestTiming> } };
 const workflowStageLabels: Record<string, string> = { INPUT_SUGGESTIONS: "推断商品补充选项", PREPARE: "准备商品资料", PLAN: "规划商品内容", WAITING_INPUT: "等待补充信息", ART_DIRECTION: "设计整套视觉分镜", GENERATE: "生成商品图片", IMAGE_REVIEW: "检查图片质量", SET_REVIEW: "检查整套页面" };
 const post = (url: string, data: unknown) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }).then(read);
 
@@ -54,6 +55,7 @@ export function DetailWorkspace({ initialProject }: { initialProject: any }) {
   const locked = useRef(false);
   const startKey = useRef<string>();
   const refreshSequence = useRef(0);
+  const pollActive = useRef(true);
   const expandedTrigger = useRef<HTMLElement | null>(null);
   function openImage(id: string) {
     expandedTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -66,13 +68,18 @@ export function DetailWorkspace({ initialProject }: { initialProject: any }) {
     const r = await fetchApiProgress(`${base}/detail-runs?includeTimings=1`, signal);
     const p = await fetchApiProgress(base, signal);
     if (signal?.aborted || sequence !== refreshSequence.current) return;
+    pollActive.current = Boolean(r && (["PENDING", "RUNNING"].includes(r.status) || r.draining)) || (p.tasks || []).some((task: any) => ["PENDING", "RUNNING"].includes(task.status));
     setProject(p); setRun(r); setLoaded(true); setConnectionError("");
     setSelected(current => p.sections.some((s: any) => s.id === current) ? current : p.sections[0]?.id || "");
   }, [base]);
   useEffect(() => {
-    let stopped = false, failures = 0; let timeout: ReturnType<typeof setTimeout>;
+    let stopped = false, failures = 0, polling = false; let timeout: ReturnType<typeof setTimeout>;
     const controller = new AbortController();
     const poll = async () => {
+      if (stopped || polling) return;
+      clearTimeout(timeout);
+      if (document.visibilityState === "hidden") return;
+      polling = true;
       try { await refresh(controller.signal); failures = 0; }
       catch (error) {
         if (!stopped) {
@@ -80,9 +87,11 @@ export function DetailWorkspace({ initialProject }: { initialProject: any }) {
           else { failures++; setConnectionError(requestErrorMessage(error, "暂时无法更新进度，正在重新连接，已显示的图片会保留。")); }
         }
       }
-      finally { if (!stopped) timeout = setTimeout(poll, Math.min(30000, 2500 * 2 ** Math.min(failures, 4))); }
+      finally { polling = false; if (!stopped) timeout = setTimeout(poll, pollActive.current ? Math.min(30000, 2500 * 2 ** Math.min(failures, 4)) : 30000); }
     };
-    void poll(); return () => { stopped = true; controller.abort(); clearTimeout(timeout); refreshSequence.current++; };
+    const visible = () => { if (document.visibilityState !== "hidden") void poll(); };
+    document.addEventListener("visibilitychange", visible); window.addEventListener("focus", visible);
+    void poll(); return () => { stopped = true; controller.abort(); clearTimeout(timeout); refreshSequence.current++; document.removeEventListener("visibilitychange", visible); window.removeEventListener("focus", visible); };
   }, [refresh]);
   useEffect(() => {
     if (run?.status === "WAITING_INPUT") setInputOpen(true);
@@ -96,8 +105,13 @@ export function DetailWorkspace({ initialProject }: { initialProject: any }) {
   const progress = run?.checkpoint.images || [];
   const displayProgress = imageDisplayProgress(progress, run?.status === "RUNNING" || run?.draining === true, project.tasks || [], generatingSectionId);
   const generated = progress.filter(i => i.assetId).length;
-  const uncertain = progress.some(i => !i.assetId && ["uncertain", "generating"].includes(i.state))
-    || Object.values(run?.checkpoint.requests || {}).some(request => ["uncertain", "running"].includes(request.state));
+  const canQueryImage = (sectionId: string) => {
+    const task = run?.checkpoint.requests?.[`GENERATE:${sectionId}`]?.upstreamTask;
+    return Boolean(task && task.status !== "failed");
+  };
+  const pendingUpstream = progress.filter(i => !i.assetId && canQueryImage(i.sectionId)).length;
+  const uncertain = progress.some(i => !i.assetId && ["uncertain", "generating"].includes(i.state) && !canQueryImage(i.sectionId))
+    || Object.values(run?.checkpoint.requests || {}).some(request => ["uncertain", "running"].includes(request.state) && !(request.upstreamTask && request.upstreamTask.status !== "failed"));
   const reviewAssets = run?.checkpoint.setReviewAssetIds || progress.map(image => image.assetId);
   const v4ReviewAssetsMatch = reviewAssets.length === sections.length && sections.every((s, i) => s.currentImageAssetId && s.currentImageAssetId === reviewAssets[i]);
   const needsPageReview = (run?.checkpoint.workflowVersion === 4 || ((run?.checkpoint.plan as { version?: number } | undefined)?.version || 0) >= 2) && (!run?.checkpoint.setReview || (run?.checkpoint.workflowVersion === 4 && !v4ReviewAssetsMatch));
@@ -116,10 +130,10 @@ export function DetailWorkspace({ initialProject }: { initialProject: any }) {
     && (pageReview as any).issues.every((issue: any) => Array.isArray(issue?.sectionIndexes));
   const pageReviewCurrent = Boolean(legacyPageReviewCurrent || v4PageReviewCurrent);
   const config = project.modelSnapshot?.previewConfig || {};
-  const totalImages = progress.length || (config.heroImageCount ?? 4) + (config.detailSectionCount ?? 6);
+  const totalImages = progress.length || (run?.input?.heroCount ?? config.heroImageCount ?? 4) + (run?.input?.detailCount ?? config.detailSectionCount ?? 6);
   const availableImages = sections.filter(s => s.imageUrl).length;
   const selectedReview = section && imageReview(section, progress);
-  const completeDetails = details.length > 0 && details.every(s => s.imageUrl) && details.length >= (config.detailSectionCount || details.length);
+  const completeDetails = details.length > 0 && details.every(s => s.imageUrl) && details.length >= (config.detailSectionCount ?? details.length);
   async function act(fn: () => Promise<unknown>) {
     if (locked.current) return false;
     locked.current = true; setBusy(true);
@@ -172,7 +186,7 @@ export function DetailWorkspace({ initialProject }: { initialProject: any }) {
     await act(async () => {
       startKey.current ??= crypto.randomUUID();
       await post(`${base}/detail-runs`, { idempotencyKey: startKey.current, mode, sectionId: selected || undefined, instruction,
-        language: mode === "translate" ? language : config.contentLanguage || "zh-CN", quality: config.quality || "auto", heroCount: config.heroImageCount || 4, detailCount: config.detailSectionCount || 6 });
+        language: mode === "translate" ? language : config.contentLanguage || "zh-CN", quality: config.quality || "auto", heroCount: config.heroImageCount ?? 4, detailCount: config.detailSectionCount ?? 6 });
       startKey.current = undefined; setInstruction("");
     });
   }
@@ -180,8 +194,8 @@ export function DetailWorkspace({ initialProject }: { initialProject: any }) {
   async function upload(files: FileList | null) {
     if (!files?.length) return;
     await act(async () => {
+      validateUploadFiles(Array.from(files));
       for (const file of Array.from(files)) {
-        if (file.size > 10 * 1024 * 1024) throw new Error("每张图片不得超过 10MB");
         await post(`${base}/assets/upload`, { type: "ANGLE", ...await fileToBase64Payload(file) });
       }
       toast.success("素材已补充");
@@ -253,6 +267,7 @@ export function DetailWorkspace({ initialProject }: { initialProject: any }) {
       {run.status === "CANCELED" && <p className="text-sm text-muted-foreground">{run.draining ? "已停止安排后续请求，正在等待已发出的请求结束并保存结果；收尾完成后可继续。" : "任务已停止，已完成的图片和检查结果均已保留。"}</p>}
       {run.checkpoint.workflowVersion === 4 && needsPageReview && generated > 0 && !active && <p className="text-sm text-amber-700 dark:text-amber-400">整套质量检查尚未完成，不代表检查通过。继续任务会保留现有图片；结果不确定的请求默认跳过。</p>}
       {["INTERRUPTED", "PARTIAL", "FAILED", "CANCELED"].includes(run.status) && <div className="space-y-3">
+        {pendingUpstream > 0 && <p className="text-sm text-muted-foreground">{pendingUpstream} 张图片已有上游任务编号；继续时查询原结果，不重新提交这些图片。</p>}
         {uncertain && <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={retryUncertain} onChange={e => setRetryUncertain(e.target.checked)}/>重试结果不确定的请求，可能产生额外费用</label>}
         {reviewOnly ? <p className="text-sm text-amber-700 dark:text-amber-400">图片已生成，检查结果仅作提示。请选中标记为需检查的图片核对或修改；已有图片和完整长图仍可下载。</p> : <Button disabled={busy || run.draining} onClick={() => control("resume", { retryUncertain })}>{run.draining ? "等待请求收尾" : uncertain && !retryUncertain ? "继续其余任务（跳过不确定请求）" : "继续未完成部分"}</Button>}
       </div>}

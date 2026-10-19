@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { randomUUID } from "node:crypto";
 import { createTranslationQueue, queueIsActive, queueProgress, translationShouldShow, QUEUE_STORAGE_KEY, type TranslationBatch, type TranslationSubmission } from "../lib/translation/client-queue";
+import type { UploadDraft, UploadDraftStore } from "../lib/translation/upload-drafts";
 
 const ok = (data: unknown) => Response.json({ success: true, data });
 const until = async (check: () => boolean) => { for (let i = 0; i < 100; i++) { if (check()) return; await new Promise(resolve => setImmediate(resolve)); } assert.fail("Queue did not settle"); };
@@ -25,7 +26,10 @@ function fixture() {
     return ok({});
   };
   const readFile = async (file: File) => ({ fileName: file.name, mimeType: "image/png", base64Data: "original-bytes" });
-  const deps = { storage, fetcher, readFile, uuid: () => id };
+  const savedDrafts = new Map<string, UploadDraft>();
+  const copy = (draft: UploadDraft) => ({ input: draft.input, projects: draft.projects.map(project => ({ ...project })) });
+  const drafts: UploadDraftStore = { get: async id => savedDrafts.has(id) ? copy(savedDrafts.get(id)!) : undefined, put: async (id, draft) => { savedDrafts.set(id, copy(draft)); }, remove: async id => { savedDrafts.delete(id); } };
+  const deps = { storage, fetcher, readFile, uuid: () => id, drafts };
   const queue = createTranslationQueue(deps);
   const input: TranslationSubmission = { groups: [{ name: "测试商品", files: [new File(["image"], "1.png"), new File(["image"], "2.png")] }], languages: ["en-US", "ja-JP"], quality: "low", instruction: "ACME 不翻译" };
   return { id, queue, input, calls, storage, deps, setBatch: (next: TranslationBatch) => { batch = next; }, handle: (next: NonNullable<typeof handle>) => { handle = next; }, entry: () => queue.store.getState().entries[0] };
@@ -60,6 +64,7 @@ test("leaving the submitting page does not stop uploads; global subscribers see 
   release(); await until(() => !!f.entry().batch);
   assert.equal(f.calls.filter(call => call.url === "/api/detail-batches").length, 1);
   assert.deepEqual(f.calls.find(call => call.url === "/api/detail-batches")!.body.translations, ["en-US", "ja-JP"]);
+  assert.equal(f.calls.find(call => call.url === "/api/detail-batches")!.body.reuseTranslationSources, true);
   assert.equal(f.entry().canRetryUpload, false);
   f.setBatch(snapshot(f.id, 2)); await f.queue.tick();
   assert.deepEqual(queueProgress(f.entry()), { completed: 2, failed: 0, total: 4, percent: 50 });
@@ -132,4 +137,43 @@ test("opening a batch before the root effect hydrates preserves previously track
   assert.equal(f.queue.store.getState().entries.find(entry => entry.id === olderId)?.total, 8);
   assert.equal(JSON.parse(f.storage.getItem(QUEUE_STORAGE_KEY)!).length, 2);
   assert.ok(f.calls.every(call => call.method === "GET"));
+});
+
+test("refresh resumes a saved partial upload with the same project, upload keys and batch ID", async () => {
+  const f = fixture(); let failed = false;
+  f.handle(async call => {
+    if (call.url.endsWith("/assets/upload") && call.body.fileName === "2.png" && !failed) {
+      failed = true; return Response.json({ success: false }, { status: 502 });
+    }
+    if (call.method === "GET") return Response.json({ success: false }, { status: 404 });
+    return undefined;
+  });
+  f.queue.enqueue(f.input);
+  await until(() => f.entry().phase === "error");
+  const draft = await f.deps.drafts.get(f.id);
+  assert.equal(draft?.projects[0].uploaded, 1);
+  const restored = createTranslationQueue(f.deps);
+  restored.hydrate();
+  await until(() => !!restored.store.getState().entries[0].batch);
+  assert.equal(f.calls.filter(call => call.url === "/api/projects").length, 1);
+  assert.equal(f.calls.filter(call => call.body?.fileName === "1.png").length, 1);
+  const retries = f.calls.filter(call => call.body?.fileName === "2.png");
+  assert.equal(retries.length, 2);
+  assert.equal(retries[0].body.uploadKey, retries[1].body.uploadKey);
+  assert.equal(f.calls.find(call => call.url === "/api/detail-batches")?.body.id, f.id);
+  await until(() => !restored.store.getState().entries[0].busy);
+  assert.equal(await f.deps.drafts.get(f.id), undefined);
+});
+
+test("a lost creation response reuses the same creation identity and storage failure prevents remote writes", async () => {
+  const f = fixture(); let fail = true;
+  f.handle(async call => call.url === "/api/projects" && fail ? Response.json({ success: false }, { status: 502 }) : undefined);
+  f.queue.enqueue(f.input); await until(() => f.entry().phase === "error");
+  fail = false; await f.queue.retryUpload(f.id);
+  const creates = f.calls.filter(call => call.url === "/api/projects");
+  assert.deepEqual(creates[0].body.translationUpload, creates[1].body.translationUpload);
+  const g = fixture();
+  g.deps.drafts.put = async () => { throw new Error("Storage full"); };
+  g.queue.enqueue(g.input); await until(() => g.entry().phase === "error");
+  assert.equal(g.calls.length, 0);
 });

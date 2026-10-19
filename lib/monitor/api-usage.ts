@@ -4,6 +4,7 @@ import path from "path";
 import { env } from "@/lib/utils/env";
 import { approximateTextTokens, calculateBilling, nonnegative, readBillingRequest, readBillingUsage, readProviderCostUsd, type BillingRecord, type BillingRequest, type BillingUsage } from "./billing";
 import { getBillingRules } from "./billing-settings";
+import { readLastLines } from "./log-tail";
 import { buildUsageCharts } from "./usage-charts";
 import { getRequestProviderCredentials, providerCredentialFingerprint } from "@/lib/services/provider-runtime";
 
@@ -25,6 +26,9 @@ export interface ApiUsageEntry {
   finalEndpoint: string | null;
   method: string;
   model: string | null;
+  protocol?: string;
+  upstreamModel?: string | null;
+  upstreamTaskId?: string;
   projectId: string | null;
   sectionId: string | null;
   runId?: string | null;
@@ -282,6 +286,8 @@ export function inferCategory(endpoint: string, bodyPayload?: Record<string, unk
     return "models";
   }
   if (endpointText.includes(":generatecontent")) {
+    const config = bodyPayload?.generationConfig as { responseModalities?: unknown } | undefined;
+    if (Array.isArray(config?.responseModalities) && config.responseModalities.includes("IMAGE")) return "image_generation";
     return "google_generate_content";
   }
   if (endpointText.includes("/images/edits")) {
@@ -302,6 +308,8 @@ export async function logApiUsage(params: {
   finalEndpoint?: string | null;
   method: string;
   model: string | null;
+  protocol?: string;
+  upstreamModel?: string | null;
   projectId?: string | null;
   sectionId?: string | null;
   runId?: string | null;
@@ -340,9 +348,12 @@ export async function logApiUsage(params: {
     finalEndpoint: params.finalEndpoint ?? params.endpoint,
     method: params.method,
     model: params.model,
+    protocol: params.protocol,
+    upstreamModel: params.upstreamModel,
+    ...(params.protocol === "evolink_tasks" && typeof parsedPayload?.id === "string" ? { upstreamTaskId: parsedPayload.id } : {}),
     projectId: params.projectId ?? null,
     sectionId: params.sectionId ?? null,
-    runId: params.runId ?? null,
+    runId: params.runId ?? getRequestProviderCredentials().agentRunId ?? null,
     operation: params.operation ?? null,
     category: params.category,
     success: params.success,
@@ -357,7 +368,11 @@ export async function logApiUsage(params: {
     billingUsage: usage.billingUsage,
     billingRequest: { ...readBillingRequest(params.requestBody), ...(parsedPayload?.service_tier ? { serviceTier: parsedPayload.service_tier } : {}) },
     ...(typeof parsedPayload?.choices?.[0]?.message?.content === "string" ? { outputTextTokens: approximateTextTokens(parsedPayload.choices[0].message.content) } : {}),
-    ...(Array.isArray(parsedPayload?.data) ? { outputImageCount: parsedPayload.data.filter((image: any) => image?.url || image?.b64_json).length } : {}),
+    ...(Array.isArray(parsedPayload?.data) ? { outputImageCount: parsedPayload.data.filter((image: any) => image?.url || image?.b64_json).length }
+      : Array.isArray(parsedPayload?.candidates) ? { outputImageCount: parsedPayload.candidates.reduce((count: number, candidate: any) => count + (Array.isArray(candidate?.content?.parts) ? candidate.content.parts.filter((part: any) => {
+        const image = part?.inlineData ?? part?.inline_data;
+        return image?.data && /^image\//i.test(image.mimeType ?? image.mime_type ?? "");
+      }).length : 0), 0) } : {}),
     attemptCount: params.attemptCount ?? 1,
     retrySummary: params.retrySummary ?? null,
     collapsedAttempts: params.collapsedAttempts ?? [],
@@ -393,11 +408,7 @@ export async function logApiUsage(params: {
 
 export async function listApiUsageEntries(limit = 100) {
   try {
-    const [raw, rules] = await Promise.all([fs.readFile(usageLogPath(), "utf8"), getBillingRules()]);
-    const lines = raw
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
+    const [lines, rules] = await Promise.all([readLastLines(usageLogPath(), limit), getBillingRules()]);
 
     return lines
       .slice(-limit)

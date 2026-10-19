@@ -10,6 +10,7 @@ import { dismissTaskRequest, hydrateTaskRequests, taskRequests } from "@/lib/tas
 import { nextQueueExpanded, queueKindLabels, taskIsRunning, taskNeedsAttention, taskShouldShow, taskStatusLabels, type TaskQueueItem } from "@/lib/tasks/queue";
 import { cn } from "@/lib/utils";
 import { TaskTimer } from "./task-timer";
+import { ImageTaskAction } from "./image-task-action";
 import { projectTaskDuration } from "@/lib/tasks/timing";
 
 const HIDDEN_KEY = "mxpage:task-queue-dismissed:v1";
@@ -29,6 +30,8 @@ function TaskItem({ item, onRemove, onNavigate }: { item: TaskQueueItem; onRemov
     <div className="space-y-1.5"><div className="flex justify-between gap-3 text-xs"><span>{item.total ? `${item.completed}/${item.total} ${item.unit}${item.failed ? ` · ${item.failed} ${item.unit}未完成` : ""}` : "准备中"}</span><span>{item.total ? `${percent}%` : ""}</span></div>
       <progress aria-label={`${item.title}进度`} className="block h-1.5 w-full accent-primary" value={item.total ? item.completed : undefined} max={item.total || 1} /></div>
     {item.error && <p className="line-clamp-3 text-xs leading-5 text-destructive" title={item.error}>{item.error}</p>}
+    {(!!item.pendingQuery || !!item.uncertain) && <p className="text-xs text-amber-700 dark:text-amber-400">{item.pendingQuery ? `${item.pendingQuery} 项等待查询上游结果。` : ""}{item.uncertain ? `${item.uncertain} 项结果未确认，请先核对调用记录，再决定是否重新提交。` : ""}</p>}
+    <ImageTaskAction item={item}/>
     <Link href={item.href} onClick={onNavigate} className="inline-flex text-xs underline underline-offset-4">{item.status === "WAITING_INPUT" ? "补充信息 / 继续任务" : running ? "查看任务" : "查看结果 / 处理任务"}</Link>
   </article>;
 }
@@ -43,18 +46,21 @@ export function TaskQueue() {
   const [error, setError] = useState("");
   const previousRunning = useRef<string[]>([]);
   const fetching = useRef(false);
+  const lastQueueRead = useRef(0);
+  const serverActive = useRef(false);
   const mounted = useRef(false);
   const dock = useRef<HTMLElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const refresh = useCallback(async () => {
-    if (fetching.current) return;
+    if (fetching.current || document.visibilityState === "hidden") return;
     fetching.current = true;
+    lastQueueRead.current = Date.now();
     const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 15_000);
     try {
       const response = await fetch("/api/tasks/queue", { cache: "no-store", signal: controller.signal });
       const payload = await response.json();
       if (!response.ok || !payload.success || !Array.isArray(payload.data)) throw new Error("无法读取任务队列");
-      if (mounted.current) { setFeed(payload.data); setError(""); }
+      if (mounted.current) { serverActive.current = payload.data.some(taskIsRunning); setFeed(payload.data); setError(""); }
     } catch { if (mounted.current) setError("暂时无法同步任务进度，正在重新连接。任务不会因此停止。"); }
     finally { clearTimeout(timeout); fetching.current = false; }
   }, []);
@@ -63,11 +69,18 @@ export function TaskQueue() {
     mounted.current = true;
     hydrateTaskRequests(); translationQueue.hydrate();
     try { const saved = JSON.parse(localStorage.getItem(HIDDEN_KEY) || "{}"); if (saved && typeof saved === "object" && !Array.isArray(saved)) setDismissed(saved); } catch { /* Use an empty dismissal list. */ }
-    const tick = () => { void refresh(); void translationQueue.tick(); };
+    const tick = () => {
+      if (document.visibilityState === "hidden") return;
+      const active = serverActive.current || translationQueue.store.getState().entries.some(queueIsActive) || taskRequests.getState().entries.some(taskIsRunning);
+      if (active || Date.now() - lastQueueRead.current >= 30000) void refresh();
+      void translationQueue.tick();
+    };
+    const sync = () => { if (document.visibilityState !== "hidden") { void refresh(); void translationQueue.tick(); } };
     tick();
     const timer = setInterval(tick, 2500);
-    window.addEventListener("focus", tick);
-    return () => { mounted.current = false; clearInterval(timer); window.removeEventListener("focus", tick); };
+    window.addEventListener("focus", sync);
+    document.addEventListener("visibilitychange", sync);
+    return () => { mounted.current = false; clearInterval(timer); window.removeEventListener("focus", sync); document.removeEventListener("visibilitychange", sync); };
   }, [refresh]);
   useEffect(() => { if (requests.revision) void refresh(); }, [requests.revision, refresh]);
 

@@ -4,18 +4,30 @@ import { detailRunInputSchema, planSchema } from "../lib/detail-runs/contracts";
 import { commercePlanSchema } from "../lib/detail-runs/merchandising";
 import { artDirectionSchema, currentArtDirectionSchema, validateArtDirection } from "../lib/detail-runs/art-direction";
 import { flexibleDirectionSchema, flexibleReviewSchema, normalizeIntentPlan, validateFlexibleDirection } from "../lib/detail-runs/flexible-creative";
-import { heroCountOptions, detailCountOptions } from "../lib/utils/image-counts";
+import { heroCountOptions, detailCountOptions, legacyHeroCountOptions, legacyDetailCountOptions, OUTPUT_COUNT_ERROR } from "../lib/utils/image-counts";
+import { previewImageCountsSchema } from "../lib/validations/project";
 import { commercePlanFixture } from "./commerce-plan-fixture";
 import { artDirectionFixture } from "./art-direction-fixture";
 import { flexibleFixture, intentFixture } from "./flexible-creative-fixture";
 
-test("configuration allows 10 heroes and 20 details, retains defaults and rejects out-of-range counts", () => {
+test("configuration allows either image type to be zero but rejects an empty task", () => {
   const request = { idempotencyKey: "count-boundary-test", heroCount: 10, detailCount: 20 };
   assert.equal(detailRunInputSchema.parse(request).heroCount, 10);
   assert.equal(detailRunInputSchema.parse(request).detailCount, 20);
-  assert.deepEqual(heroCountOptions, [3, 4, 5, 6, 7, 8, 9, 10]);
-  assert.deepEqual(detailCountOptions, Array.from({ length: 17 }, (_, i) => i + 4));
-  for (const change of [{ heroCount: 11 }, { heroCount: 2 }, { detailCount: 21 }, { detailCount: 3 }, { detailCount: 4.5 }]) {
+  assert.deepEqual(heroCountOptions, Array.from({ length: 11 }, (_, i) => i));
+  assert.deepEqual(legacyHeroCountOptions, heroCountOptions);
+  assert.deepEqual(detailCountOptions, Array.from({ length: 21 }, (_, i) => i));
+  assert.deepEqual(legacyDetailCountOptions, detailCountOptions);
+  for (const detailCount of [0, 1, 2, 3, 20]) assert.equal(detailRunInputSchema.parse({ ...request, detailCount }).detailCount, detailCount);
+  for (const [heroCount, detailCount] of [[0, 1], [0, 20], [1, 0], [10, 0]]) {
+    assert.equal(detailRunInputSchema.safeParse({ ...request, heroCount, detailCount }).success, true);
+    assert.equal(previewImageCountsSchema.safeParse({ heroImageCount: heroCount, detailSectionCount: detailCount }).success, true);
+  }
+  const empty = detailRunInputSchema.safeParse({ ...request, heroCount: 0, detailCount: 0 });
+  assert.equal(empty.success, false);
+  if (!empty.success) assert.equal(empty.error.issues[0].message, OUTPUT_COUNT_ERROR);
+  assert.equal(previewImageCountsSchema.safeParse({ heroImageCount: 0, detailSectionCount: 0 }).success, false);
+  for (const change of [{ heroCount: 11 }, { heroCount: -1 }, { heroCount: 0.5 }, { detailCount: 21 }, { detailCount: -1 }, { detailCount: 4.5 }]) {
     assert.equal(detailRunInputSchema.safeParse({ ...request, ...change }).success, false);
   }
   const defaults = detailRunInputSchema.parse({ idempotencyKey: request.idempotencyKey });

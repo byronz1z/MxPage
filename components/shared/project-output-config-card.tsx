@@ -1,6 +1,6 @@
 "use client";
 
-import { HERO_MAX, DETAIL_MAX, legacyHeroCountOptions, legacyDetailCountOptions } from "@/lib/utils/image-counts";
+import { HERO_MAX, DETAIL_MAX, legacyHeroCountOptions, legacyDetailCountOptions, hasOutputImages, OUTPUT_COUNT_ERROR } from "@/lib/utils/image-counts";
 import { Select } from "@/components/ui/select";
 
 
@@ -37,8 +37,8 @@ function normalizePreviewConfig(snapshot: unknown): PreviewConfig {
   const previewConfig = (data.previewConfig as Record<string, unknown> | null) ?? {};
 
   return {
-    heroImageCount: Math.min(HERO_MAX, Math.max(1, Number(previewConfig.heroImageCount ?? 4))),
-    detailSectionCount: Math.min(DETAIL_MAX, Math.max(1, Number(previewConfig.detailSectionCount ?? 6))),
+    heroImageCount: Math.min(HERO_MAX, Math.max(0, Number(previewConfig.heroImageCount ?? 4))),
+    detailSectionCount: Math.min(DETAIL_MAX, Math.max(0, Number(previewConfig.detailSectionCount ?? 6))),
     imageAspectRatio: previewConfig.imageAspectRatio === "3:4" ? "3:4" : "9:16",
     contentLanguage: normalizeContentLanguage(previewConfig.contentLanguage),
   };
@@ -96,6 +96,7 @@ export function ProjectOutputConfigCard({
     formState.contentLanguage !== initialConfig.contentLanguage;
 
   const saveConfig = async () => {
+    if (!hasOutputImages(formState.heroImageCount, formState.detailSectionCount)) { toast.error(OUTPUT_COUNT_ERROR); return; }
     try {
       setSaving(true);
       const response = await fetch(`/api/projects/${project.id}`, {
@@ -172,7 +173,7 @@ export function ProjectOutputConfigCard({
               onValueChange={(value) =>
                 setFormState((current) => ({
                   ...current,
-                  heroImageCount: Math.min(HERO_MAX, Math.max(1, Number(value))),
+                  heroImageCount: Math.min(HERO_MAX, Math.max(0, Number(value))),
                 }))
               }
             >
@@ -190,7 +191,7 @@ export function ProjectOutputConfigCard({
               onValueChange={(value) =>
                 setFormState((current) => ({
                   ...current,
-                  detailSectionCount: Math.min(DETAIL_MAX, Math.max(1, Number(value))),
+                  detailSectionCount: Math.min(DETAIL_MAX, Math.max(0, Number(value))),
                 }))
               }
             >
@@ -219,9 +220,10 @@ export function ProjectOutputConfigCard({
         </div>
 
         <OutputConfigSummary config={formState} />
+        {!hasOutputImages(formState.heroImageCount, formState.detailSectionCount) && <p role="alert" className="text-sm text-destructive">{OUTPUT_COUNT_ERROR}</p>}
 
         <div className="flex justify-end">
-          <Button onClick={saveConfig} disabled={saving || !hasChanges} className="rounded-xl">
+          <Button onClick={saveConfig} disabled={saving || !hasChanges || !hasOutputImages(formState.heroImageCount, formState.detailSectionCount)} className="rounded-xl">
             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
             保存输出配置
           </Button>

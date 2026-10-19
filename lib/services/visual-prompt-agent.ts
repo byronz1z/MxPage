@@ -1,3 +1,4 @@
+import { selectModel } from "@/lib/ai/model-selection";
 import type { ProductAsset } from "@prisma/client";
 
 import { visualPromptAgentSchema } from "@/lib/ai/schemas/visual-prompt";
@@ -45,17 +46,7 @@ function readCapabilities(model: ProviderModelRecord) {
 }
 
 function pickPromptModel(provider: ProviderContext, needsVision: boolean) {
-  const textModels = provider.models.filter((model) => readCapabilities(model).text);
-  const visionTextModels = textModels.filter((model) => readCapabilities(model).vision);
-  const candidates = needsVision && visionTextModels.length > 0 ? visionTextModels : textModels;
-
-  return (
-    candidates.find((model) => model.isDefaultPlanning)?.modelId ??
-    candidates.find((model) => model.isDefaultAnalysis)?.modelId ??
-    candidates.find((model) => /gpt-4o|gpt-4\.1|gpt-5|gemini|qwen.*vl|kimi|moonshot/i.test(model.modelId))?.modelId ??
-    candidates[0]?.modelId ??
-    null
-  );
+  return selectModel(provider.models, "planning", undefined, needsVision);
 }
 
 function summarizeReferences(input: BuildVisualPromptInput) {

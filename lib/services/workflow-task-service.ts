@@ -8,6 +8,7 @@ import { analyzeProject } from "@/lib/services/analysis-service";
 import { editSectionImage, generateSectionImage, regenerateSectionImage } from "@/lib/services/generation-service";
 import { planSections } from "@/lib/services/planner-service";
 import { createProject } from "@/lib/services/project-service";
+import { getProviderAdapter, snapshotProvider } from "./provider-service";
 import { runWithProviderCredentials, type RequestProviderCredentials } from "@/lib/services/provider-runtime";
 import {
   assertTaskNotCanceled,
@@ -637,37 +638,49 @@ export async function createTranslatePageTask(input: TranslatePageTaskInput, cre
 async function runXiaohongshuGenerateTask(taskId: string, input: XiaohongshuGenerateTaskInput) {
   const imageAspectRatio = input.imageAspectRatio ?? "3:4";
   const pages = input.plan.pages;
-  let images: unknown[] = [];
-  let successCount = 0;
+  const parent = await getTask(taskId);
+  const previous = (parent?.outputPayload ?? {}) as Record<string, any>;
+  let images: any[] = Array.isArray(previous.images) ? previous.images : [];
+  let successCount = images.length;
   let failedCount = 0;
   const items = pages.map((page) => ({
     pageNumber: page.pageNumber,
     title: page.title,
-    state: "pending",
-    message: "等待生成",
+    state: images.some(image => image.pageNumber === page.pageNumber) ? "done" : "pending",
+    message: images.some(image => image.pageNumber === page.pageNumber) ? "已生成" : "等待生成",
   }));
 
   await startTask(taskId, {
     totalItems: pages.length,
-    completedItems: 0,
+    completedItems: successCount,
     failedItems: 0,
     estimatedImageCount: pages.length,
     currentStep: "xiaohongshu_generate_started",
     items,
-    images: [],
+    images,
   });
 
   try {
     for (let index = 0; index < pages.length; index += 1) {
       await assertTaskNotCanceled(taskId);
       const page = pages[index];
+      if (images.some(image => image.pageNumber === page.pageNumber)) continue;
       items[index] = { ...items[index], state: "running", message: "正在生成图片" };
       await updateTaskProgress(taskId, { currentStep: "generating_xhs_page", items, images });
 
       try {
+        const children = await prisma.generationTask.findMany({ where: { taskType: "XHS_GENERATE", projectId: parent!.projectId, createdAt: { gte: parent!.createdAt } }, orderBy: { createdAt: "desc" } });
+        const child = children.find(row => (row.inputPayload as any)?.parentTaskId === taskId && (row.outputPayload as any)?.imageRecovery?.pageNumber === page.pageNumber);
+        const saved = child?.outputPayload as Record<string, any> | undefined;
+        if (saved?.imageAssetId && saved.imageUrl) {
+          images.push({ pageNumber: page.pageNumber, title: page.title, prompt: saved.imageRecovery.prompt, model: saved.usedModel, imageUrl: saved.imageUrl, updatedAt: child!.updatedAt.toISOString() });
+          successCount++; items[index] = { ...items[index], state: "done", message: "已恢复原图片" }; continue;
+        }
+        if (child && (["PENDING", "RUNNING"].includes(child.status) || ["pending_query", "uncertain"].includes(saved?.imageOutcome))) throw new Error("此页已有请求尚未确认，请在任务记录中查询原图片；不会再次提交。");
         const pageImages = await generateXiaohongshuImages(input.plan, input.referenceImages ?? [], {
           imageAspectRatio,
           pageNumber: page.pageNumber,
+          parentTaskId: taskId,
         });
         images = [
           ...images.filter((image) => (image as { pageNumber?: number }).pageNumber !== page.pageNumber),
@@ -720,6 +733,7 @@ async function runXiaohongshuGenerateTask(taskId: string, input: XiaohongshuGene
 
 export async function createXiaohongshuGenerateTask(input: XiaohongshuGenerateTaskInput, credentials: RequestProviderCredentials) {
   const systemProject = await ensureSystemTaskProject();
+  const providerSnapshot = await runWithProviderCredentials(credentials, async () => snapshotProvider((await getProviderAdapter()).provider));
   const imageAspectRatio = input.imageAspectRatio ?? "3:4";
   const task = await createTask({
     projectId: systemProject.id,
@@ -729,6 +743,7 @@ export async function createXiaohongshuGenerateTask(input: XiaohongshuGenerateTa
       plan: input.plan,
       imageAspectRatio,
       referenceImages: input.referenceImages ?? [],
+      providerSnapshot,
     },
     outputPayload: {
       totalItems: input.plan.pages.length,
@@ -741,7 +756,7 @@ export async function createXiaohongshuGenerateTask(input: XiaohongshuGenerateTa
     },
   });
 
-  runTaskInBackground(() => runWithProviderCredentials(credentials, () => runXiaohongshuGenerateTask(task.id, input)));
+  runTaskInBackground(() => runWithProviderCredentials({ ...credentials, providerSnapshot }, () => runXiaohongshuGenerateTask(task.id, input)));
   return getTask(task.id);
 }
 
@@ -757,6 +772,13 @@ export async function retryWorkflowTask(taskId: string, credentials: RequestProv
   const input = (task.inputPayload ?? {}) as Record<string, unknown>;
   if (input.workflow === "image-translation-v1" || input.workflow === "detail-batch-v1") {
     throw new Error("请在对应批次页面继续或重试此任务。");
+  }
+  if (input.workflow === "image-operation-v1" || !["BATCH_CREATE", "TRANSLATE_PAGE", "XHS_GENERATE"].includes(task.taskType)) {
+    throw new Error("请在任务记录中查询已有图片，或在原页面明确创建新操作。");
+  }
+  const previous = (task.outputPayload ?? {}) as Record<string, any>;
+  if (previous.upstreamImageTask?.status !== "failed" && previous.upstreamImageTask?.id || ["pending_query", "uncertain"].includes(previous.imageOutcome)) {
+    throw new Error("原请求结果尚未确认，请先查询原任务，避免重复计费。");
   }
   await prisma.generationTask.update({
     where: { id: taskId },
@@ -793,7 +815,7 @@ export async function retryWorkflowTask(taskId: string, credentials: RequestProv
 
   if (task.taskType === "XHS_GENERATE") {
     runTaskInBackground(() =>
-      runWithProviderCredentials(credentials, () =>
+      runWithProviderCredentials({ ...credentials, providerSnapshot: input.providerSnapshot as any }, () =>
         runXiaohongshuGenerateTask(taskId, {
           plan: input.plan as XiaohongshuPlan,
           imageAspectRatio: input.imageAspectRatio as XiaohongshuImageAspectRatio,

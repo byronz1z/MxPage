@@ -1,9 +1,10 @@
+import { selectModel } from "@/lib/ai/model-selection";
 import { createHash } from "crypto";
 import { prisma } from "@/lib/db/prisma";
 import { readStorageFile, saveUploadAsset } from "@/lib/storage/asset-manager";
 import { contentLanguageLabels, type ContentLanguage } from "@/lib/utils/content-language";
 import { isStyleReference } from "@/lib/utils/asset-purpose";
-import { getProviderAdapter } from "@/lib/services/provider-service";
+import { getProviderAdapter, snapshotProvider, type ProviderSnapshot } from "@/lib/services/provider-service";
 import { saveGeneratedImage } from "@/lib/storage/asset-manager";
 import { Prisma } from "@prisma/client";
 import { startTiming, touchTiming } from "@/lib/tasks/timing";
@@ -20,15 +21,18 @@ export async function prepareTranslationProject(id: string, sourceId: string, la
   const existing = await prisma.project.findUnique({ where: { id } });
   if ((existing?.modelSnapshot as any)?.translationReady) return;
   const source = await prisma.project.findUniqueOrThrow({ where: { id: sourceId }, include: { assets: { where: { type: { in: ["MAIN", "ANGLE", "DETAIL", "REFERENCE"] } }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] } } });
+  if (typeof (source.modelSnapshot as { trashedAt?: unknown } | null)?.trashedAt === "string") throw new Error("原作品已在回收站，请先还原。");
   source.assets = source.assets.filter(a => !isStyleReference(a));
   if (!source.assets.length || source.assets.length > 30) throw new Error("每套翻译需要 1–30 张原图。");
   await prisma.project.upsert({ where: { id }, create: { id, name: `${source.name} · ${contentLanguageLabels[language]}`, platform: source.platform, style: source.style, description: source.description }, update: {} });
   for (const [order, original] of source.assets.entries()) {
-    let asset = await prisma.productAsset.findFirst({ where: { projectId: id, sortOrder: order, type: "DETAIL" } });
+    let asset = id === sourceId
+      ? await prisma.productAsset.update({ where: { id: original.id }, data: { type: "DETAIL", sortOrder: order } })
+      : await prisma.productAsset.findFirst({ where: { projectId: id, sortOrder: order, type: "DETAIL" } });
     if (!asset) asset = await saveUploadAsset({ projectId: id, type: "DETAIL", fileName: original.fileName, mimeType: original.mimeType, fileBuffer: await readStorageFile(original.filePath), sortOrder: order });
     await prisma.pageSection.upsert({ where: { projectId_sectionKey: { projectId: id, sectionKey: `translation-${order}` } }, create: { projectId: id, sectionKey: `translation-${order}`, type: "CUSTOM", title: original.fileName, goal: "翻译原图文字", copy: "", visualPrompt: translationRules, order, editableData: { translationSourceAssetId: asset.id } }, update: {} });
   }
-  await prisma.project.update({ where: { id }, data: { modelSnapshot: { translationReady: true, workType: "translation", translationSourceProjectId: sourceId, previewConfig: { contentLanguage: language, quality, heroImageCount: 0, detailSectionCount: source.assets.length } } } });
+  await prisma.project.update({ where: { id }, data: { modelSnapshot: { ...(existing?.modelSnapshot as Record<string, Prisma.InputJsonValue> || {}), translationReady: true, workType: "translation", translationSourceProjectId: sourceId, previewConfig: { contentLanguage: language, quality, heroImageCount: 0, detailSectionCount: source.assets.length } } } });
 }
 
 const json = (value: unknown) => JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
@@ -59,7 +63,12 @@ export async function runTranslationProject(options: {
     sectionId: section.id, sourceAssetId: (section.editableData as any).translationSourceAssetId, title: section.title, status: "QUEUED", attempts: 0,
   }));
   if (!images.length) throw new Error("没有可翻译的原图，请重新上传图片。");
-  const existing = await prisma.generationTask.upsert({ where: { id }, create: { id, projectId, taskType: "TRANSLATE_PAGE", inputPayload: json({ workflow: TRANSLATION_WORKFLOW, batchId: options.batchId, language: options.language, quality: options.quality, instruction: options.instruction }), outputPayload: json({ images, message: "等待翻译" }) }, update: {} });
+  const previousTask = await prisma.generationTask.findUnique({ where: { id } });
+  const savedInput = previousTask?.inputPayload as { providerSnapshot?: ProviderSnapshot; modelId?: string } | undefined;
+  const context = await getProviderAdapter(savedInput?.providerSnapshot?.id, savedInput?.providerSnapshot, { textModelIds: [], legacyTextProtocol: Boolean(previousTask && !savedInput?.providerSnapshot) });
+  const modelId = savedInput?.modelId || selectModel(context.provider.models, "edit");
+  const providerSnapshot = savedInput?.providerSnapshot || snapshotProvider(context.provider);
+  const existing = await prisma.generationTask.upsert({ where: { id }, create: { id, projectId, taskType: "TRANSLATE_PAGE", inputPayload: json({ workflow: TRANSLATION_WORKFLOW, providerSnapshot, modelId, batchId: options.batchId, language: options.language, quality: options.quality, instruction: options.instruction }), outputPayload: json({ images, message: "等待翻译" }) }, update: {} });
   if (existing.status === "SUCCESS") return getTranslationTask(id);
   if (existing.status === "RUNNING" && existing.updatedAt.getTime() > Date.now() - 60000) throw new Error("翻译请求仍在结束，请稍后再继续。");
   await assertNoDetailRun(projectId);
@@ -75,7 +84,11 @@ export async function runTranslationProject(options: {
     } else if (image.status === "RUNNING") {
       image.status = "UNCERTAIN"; image.error = "上次请求已中断，结果不确定；手动重试可能再次计费。";
     }
-    if (options.retryFailed && ["FAILED", "UNCERTAIN"].includes(image.status)) { image.status = "QUEUED"; image.error = undefined; }
+    const queryExisting = image.upstreamTask && image.upstreamTask.status !== "failed";
+    if ((queryExisting || options.retryFailed) && ["FAILED", "UNCERTAIN"].includes(image.status)) {
+      image.status = "QUEUED"; image.error = undefined;
+      if (!queryExisting) image.upstreamTask = undefined;
+    }
   }
   const startedAt = new Date(Math.max(Date.now(), (existing.startedAt?.getTime() || 0) + 1));
   progress.taskTiming = startTiming(progress.taskTiming, startedAt.getTime());
@@ -110,28 +123,34 @@ export async function runTranslationProject(options: {
         await tx.pageSection.update({ where: { id: image.sectionId }, data: { currentImageAssetId: image.assetId, status: "SUCCESS" } });
       }
     });
-    const { provider, adapter } = await getProviderAdapter();
-    const candidates = provider.models.filter(model => model.isAvailable && model.capabilities.image_edit && model.capabilities.real_image_edit !== false);
-    const model = candidates.find(model => model.isDefaultImageEdit) || candidates.find(model => /gpt.?image.?2\.5.?flare/i.test(model.modelId)) || candidates[0];
-    if (!model) throw new Error("请在 AI 配置中探测并选择支持图片编辑的模型；翻译不需要分析模型。");
+    const { adapter } = context;
+    const model = { modelId };
     const prompt = buildTranslationPrompt(options.language, options.instruction);
     const pending = progress.images.filter(image => image.status === "QUEUED");
     let index = 0;
+    let endpointUnavailable = false;
     const worker = async () => {
       while (index < pending.length) {
         const image = pending[index++];
-        if (lost || !await options.active()) return;
+        if (lost || endpointUnavailable || !await options.active()) return;
         let sent = false;
         try {
           const sourceAsset = sources.find(asset => asset.id === image.sourceAssetId);
           if (!sourceAsset) throw new Error("原图文件不存在，请重新上传。");
           const bytes = await readStorageFile(sourceAsset.filePath);
-          image.status = "RUNNING"; image.attempts++; image.error = undefined;
+          image.status = "RUNNING"; if (!image.upstreamTask) image.attempts++; image.error = undefined;
           await save();
           await transaction(async tx => { await tx.pageSection.update({ where: { id: image.sectionId }, data: { status: "GENERATING" } }); });
-          if (lost || !await options.active()) { image.status = "QUEUED"; image.attempts--; await save(); return; }
+          if (lost || endpointUnavailable || !await options.active()) { image.status = "QUEUED"; if (!image.upstreamTask) image.attempts--; await save(); return; }
           sent = true;
-          const source = await adapter.generateImageOnce({ model: model.modelId, prompt, referenceImages: [`data:${sourceAsset.mimeType || "image/png"};base64,${bytes.toString("base64")}`], size: "auto", quality: options.quality, timeoutMs: 180000, monitor: { projectId, sectionId: image.sectionId, runId: id, operation: "translate_image" } });
+          const source = await adapter.generateImageOnce({ model: model.modelId, prompt, referenceImages: [`data:${sourceAsset.mimeType || "image/png"};base64,${bytes.toString("base64")}`], size: "auto", quality: options.quality, timeoutMs: 180000, monitor: { projectId, sectionId: image.sectionId, runId: id, operation: "translate_image" },
+            upstreamTask: image.upstreamTask,
+            onUpstreamTask: async task => { image.upstreamTask = task; await save(); },
+            beforeSubmit: async () => {
+              await transaction(async () => {});
+              if (endpointUnavailable || !await options.active()) throw new TranslationOwnershipLost("翻译任务已停止，未提交新图片请求。");
+            },
+          });
           const asset = await saveGeneratedImage({ projectId, sectionId: image.sectionId, prompt, source, metadata: { translationTaskId: id, sourceAssetId: image.sourceAssetId, language: options.language, usedModel: model.modelId } });
           await transaction(async tx => {
             const previous = await tx.sectionVersion.findFirst({ where: { sectionId: image.sectionId }, orderBy: { versionNumber: "desc" } });
@@ -142,6 +161,7 @@ export async function runTranslationProject(options: {
           image.assetId = asset.id; image.status = "COMPLETED";
         } catch (error) {
           if (lost || error instanceof TranslationOwnershipLost) throw error;
+          if ((error as { code?: string })?.code === "IMAGE_ENDPOINT_UNAVAILABLE") endpointUnavailable = true;
           image.status = sent ? "UNCERTAIN" : "FAILED";
           image.error = requestErrorMessage(error, "图片翻译未完成，已保存的译图会保留。");
           await transaction(async tx => { await tx.pageSection.updateMany({ where: { id: image.sectionId }, data: { status: "FAILED" } }); });

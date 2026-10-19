@@ -76,6 +76,14 @@ export function handleRouteError(error: unknown) {
 
   if (error instanceof Error) {
     const code = (error as { code?: string }).code;
+    if (code === "PROVIDER_CREDENTIALS_MISSING") return fail(code, "当前浏览器未提供此服务的 API Key。请在设置中填写对应服务的密钥；不同浏览器或设备需要分别配置。", { source: "local" }, 400);
+    if (code === "PROVIDER_DISCOVERY_AUTH_ERROR") {
+      const status = (error as Error & { status: number }).status;
+      const message = status === 403
+        ? "模型列表服务返回 403，拒绝访问。请检查此 API Key 的模型列表权限及服务商访问限制。"
+        : "模型列表服务返回 401，未接受当前 API Key。请在服务商控制台确认密钥有效且属于此服务，再重新填写并点击“仅刷新模型列表”。";
+      return fail(code, message, { source: "upstream", upstreamStatus: status }, status);
+    }
     if (code === "P2025") return fail("NOT_FOUND", requestErrorMessage(error), null, 404);
     if (code === "ENOENT") return fail("ASSET_MISSING", requestErrorMessage(error), null, 409);
     if (["P1001", "P1002", "P1008", "P2024", "P2034"].includes(code || "")) return fail("SERVICE_BUSY", "本地服务暂时繁忙，请稍后刷新。已有结果已保留。", null, 503);

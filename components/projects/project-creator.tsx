@@ -18,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { fileToBase64Payload } from "@/lib/utils/base64-upload";
+import { validateUploadFiles } from "@/lib/storage/upload-limits";
 import { assetTypeLabels, platformLabels, platformOptions, styleLabels, styleOptions } from "@/types/domain";
 import { projectCreateSchema } from "@/lib/validations/project";
 
@@ -95,6 +96,7 @@ export function ProjectCreator() {
 
     setSubmitting(true);
     try {
+      validateUploadFiles(Object.values(uploads).flat());
       const createResponse = await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

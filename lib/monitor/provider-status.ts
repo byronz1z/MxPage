@@ -12,6 +12,8 @@ export type ImageApiStatus = {
   };
 };
 const normalize = (baseUrl: string) => baseUrl.trim().replace(/\/+$/, "").replace(/\/v1$/i, "");
+// Older Gemini logs used one category for text, vision and image output.
+const legacyGeminiImageOperations = new Set(["v4_image_generation", "generate_section_image", "regenerate_section_image", "translate_section_image", "translate_image", "enhance_section_image", "repaint_section_image"]);
 
 export function resolveImageApiStatus(entries: ApiUsageEntry[], config: {
   model: string | null; baseUrl: string; fingerprint?: string;
@@ -33,7 +35,8 @@ export function resolveImageApiStatus(entries: ApiUsageEntry[], config: {
   }).sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
   const matching = providerEntries.filter(entry => entry.credentialFingerprint === config.fingerprint);
   const isSelectedImage = (entry: ApiUsageEntry) => Boolean(config.model) && entry.model === config.model
-    && (["image_generation", "image_edit"].includes(entry.category) || (entry.outputImageCount ?? 0) > 0);
+    && (["image_generation", "image_edit"].includes(entry.category) || (entry.outputImageCount ?? 0) > 0
+      || (entry.category === "google_generate_content" && legacyGeminiImageOperations.has(entry.operation || "")));
   const currentImage = matching.find(isSelectedImage);
   // Older logs can show model history, but must never verify the current credential.
   const latestImage = currentImage ?? providerEntries.find(entry => !entry.credentialFingerprint && isSelectedImage(entry));

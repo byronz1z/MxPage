@@ -1,3 +1,7 @@
+import { textSettings } from "@/lib/ai/text-protocol";
+import { selectModel } from "@/lib/ai/model-selection";
+import { isImageEndpointError } from "@/lib/ai/image-protocol";
+import type { UpstreamImageTask } from "@/lib/ai/provider-client";
 import { randomUUID } from "crypto";
 import { startTiming, touchTiming, type TaskTiming } from "@/lib/tasks/timing";
 import type { RequestTiming } from "./timing";
@@ -5,10 +9,11 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import sharp from "sharp";
 import { prisma } from "@/lib/db/prisma";
-import { getProviderAdapter } from "@/lib/services/provider-service";
+import { getProviderAdapter, snapshotProvider, type ProviderSnapshot } from "@/lib/services/provider-service";
 import { runWithProviderCredentials, type RequestProviderCredentials } from "@/lib/services/provider-runtime";
 import { readStorageFile, saveGeneratedImage } from "@/lib/storage/asset-manager";
-import { detailRunInputSchema, type DetailRunInput } from "./contracts";
+import { detailRunInputSchema, socialPostSchema, type DetailRunInput } from "./contracts";
+import { xhsImageCount } from "./xhs";
 import { invokeStructured } from "./structured-model";
 import { normalizeTypesetting, type V4TextBlock } from "./typesetting-v4";
 import { buildCommerceSystemPrompt } from "@/lib/ai/prompts/ecommerce-system";
@@ -46,14 +51,16 @@ const directionSchema = z.object({
     align: z.string().default("left"),
   })).max(12) })).min(1).max(30),
 });
+const xhsPlanSchema = planSchema.extend({ post: socialPostSchema });
+type WorkflowPlan = z.infer<typeof planSchema> & { post?: z.infer<typeof socialPostSchema> };
 const imageReviewSchema = z.object({ passed: z.boolean(), issues: z.array(z.object({ kind: z.enum(["identity", "copy", "layout", "typography", "continuity"]), message: z.string().min(1).max(500), severity: z.enum(["warning", "error"]) })).max(10) });
 const setReviewSchema = z.object({ passed: z.boolean(), issues: z.array(z.object({ sectionIndexes: z.array(z.number().int().nonnegative()).min(1), message: z.string().min(1).max(500) })).max(8) });
 
-type RequestProgress = { state: "running" | "completed" | "uncertain" | "rejected"; requestId: string; error?: string };
+type RequestProgress = { state: "running" | "completed" | "uncertain" | "rejected"; requestId: string; error?: string; upstreamTask?: UpstreamImageTask };
 export type V4Checkpoint = {
   taskTiming?: TaskTiming;
   requestTimings?: Record<string, RequestTiming>;
-  workflowVersion: 4; stage: string; plan?: z.infer<typeof planSchema>; artDirection?: z.infer<typeof directionSchema>; images: Array<{ sectionId: string; title: string; state: "pending" | "generating" | "generated" | "checked" | "uncertain"; assetId?: string; correctionCount: number; check?: z.infer<typeof imageReviewSchema> }>; imageReviews: Record<string, z.infer<typeof imageReviewSchema>>; setReview?: z.infer<typeof setReviewSchema>; missingFields?: z.infer<typeof planSchema>["missingFields"]; questions?: StoredSupplementalQuestion[]; answers: string[]; attempts: Record<string, number>; timings: Record<string, { startedAt: string; finishedAt?: string }>; lastError?: { stage: string; code: string; message: string; retryable: boolean };
+  workflowVersion: 4; stage: string; plan?: WorkflowPlan; artDirection?: z.infer<typeof directionSchema>; images: Array<{ sectionId: string; title: string; state: "pending" | "generating" | "generated" | "checked" | "uncertain"; assetId?: string; correctionCount: number; check?: z.infer<typeof imageReviewSchema> }>; imageReviews: Record<string, z.infer<typeof imageReviewSchema>>; setReview?: z.infer<typeof setReviewSchema>; missingFields?: z.infer<typeof planSchema>["missingFields"]; questions?: StoredSupplementalQuestion[]; answers: string[]; attempts: Record<string, number>; timings: Record<string, { startedAt: string; finishedAt?: string }>; lastError?: { stage: string; code: string; message: string; retryable: boolean };
   requests?: Record<string, RequestProgress>;
   retryAuthorized?: string[];
   setReviewGroups?: Record<string, { assetIds: string[]; result: z.infer<typeof setReviewSchema> }>;
@@ -66,7 +73,9 @@ export type V4Checkpoint = {
 };
 
 async function projectForRun(projectId: string) {
-  return prisma.project.findUniqueOrThrow({ where: { id: projectId }, include: { assets: { orderBy: [{ isMain: "desc" }, { sortOrder: "asc" }] }, sections: { orderBy: { order: "asc" }, include: { currentImageAsset: true } } } });
+  const project = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, include: { assets: { orderBy: [{ isMain: "desc" }, { sortOrder: "asc" }] }, sections: { orderBy: { order: "asc" }, include: { currentImageAsset: true } } } });
+  if (typeof (project.modelSnapshot as { trashedAt?: unknown } | null)?.trashedAt === "string") throw new Error("作品已在回收站，请先还原。");
+  return project;
 }
 async function imageData(assetId: string, projectId: string) {
   const asset = await prisma.productAsset.findFirstOrThrow({ where: { id: assetId, projectId } });
@@ -77,14 +86,11 @@ async function assertIdle(projectId: string) {
   await prisma.detailRun.updateMany({ where: { projectId, status: { in: ["RUNNING", "PENDING"] }, leaseUntil: { lt: new Date() } }, data: { status: "INTERRUPTED", stage: "运行已中断，可继续", leaseToken: null, leaseUntil: null } });
   if (await prisma.detailRun.findFirst({ where: { projectId, OR: [{ status: { in: active } }, { leaseToken: { not: null }, leaseUntil: { gt: new Date() } }] } })) throw new Error("当前项目仍有任务或已发出的请求正在收尾，请稍后继续。");
 }
-function chooseModel(models: Array<{ modelId: string; isDefaultPlanning: boolean; isDefaultDetailImage: boolean; isDefaultHeroImage: boolean; isDefaultImageEdit: boolean }>, role: "planning" | "image" | "edit") {
-  const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9.]/g, "");
-  const required = role === "planning" ? "gpt6luna" : "gptimage2.5flare";
-  const requiredModel = models.find(model => normalize(model.modelId) === required);
-  if (!requiredModel) throw new Error(`未探测到详情工作流所需模型：${role === "planning" ? "gpt-6-luna" : "gpt-image-2.5-flare"}。请先刷新 Provider 模型列表。`);
-  return requiredModel.modelId;
+
+function isTimeout(error: unknown) {
+  const value = error as { name?: string; code?: string; message?: string } | null;
+  return /timeout|timed out|abort/i.test(`${value?.name || ""} ${value?.code || ""} ${value?.message || String(error)}`);
 }
-function isTimeout(error: unknown) { return /timeout|timed out|abort/i.test(error instanceof Error ? error.message : String(error)); }
 function checksComplete(cp: V4Checkpoint) {
   return cp.images.length > 0 && cp.images.every(image => image.assetId && image.state === "checked" && image.check?.passed === true && !image.check.issues.some(issue => issue.severity === "error")) && cp.setReview?.passed === true && cp.setReview.issues.length === 0;
 }
@@ -102,6 +108,12 @@ export async function getV4DetailRun(projectId: string, runId?: string) {
     run = await prisma.detailRun.findUniqueOrThrow({ where: { id: run.id } });
   }
   const safeCheckpoint = { ...checkpoint, ...(checkpoint.lastError ? { lastError: { ...checkpoint.lastError, message: requestErrorMessage({ message: checkpoint.lastError.message }) } } : {}) };
+  if (run.status === "WAITING_INPUT" && checkpoint.workflowVersion === 4) {
+    // Recheck saved candidates locally: a corrected validator must not leave an
+    // old diagnostic blocking usable answers or require another paid request.
+    const requiredFields = [...new Set([...(checkpoint.plan?.missingFields || []).map(field => field.field), ...incompleteSupplementalEstimates(checkpoint.confirmedSupplementalAnswers).flatMap(answer => answer.fields)])];
+    safeCheckpoint.supplementalQuestionIssue = supplementalQuestionIssues(normalizeSupplementalQuestions(checkpoint.questions), requiredFields) || undefined;
+  }
   return { id: run.id, projectId, status: run.status, stage: run.stage, input: run.input, checkpoint: json(safeCheckpoint), error: run.error ? requestErrorMessage({ message: run.error }) : null, createdAt: run.createdAt, updatedAt: run.updatedAt, draining: run.status === "CANCELED" && !!run.leaseToken && !!run.leaseUntil && run.leaseUntil.getTime() > Date.now() };
 }
 
@@ -115,13 +127,19 @@ export async function createV4DetailRun(projectId: string, raw: unknown, credent
   }
   await assertIdle(projectId);
   const project = await projectForRun(projectId);
+  if (input.mode === "xhs") {
+    input.heroCount = 0;
+    input.detailCount = xhsImageCount(raw as DetailRunInput, input.instruction || project.description || "");
+  }
   const snapshot = project.modelSnapshot as { workType?: string; translationReady?: boolean } | null;
   if (snapshot?.workType === "translation" || snapshot?.translationReady) throw new Error("翻译项目请在详情页翻译入口处理。");
   if (!project.assets.length && input.mode !== "xhs") throw new Error("请先上传商品素材。");
   const { provider } = await getProviderAdapter();
-  const planningModelId = chooseModel(provider.models, "planning");
-  const imageModelId = chooseModel(provider.models, "image");
-  const editModelId = chooseModel(provider.models, "edit");
+  const planningModelId = selectModel(provider.models, "planning", undefined, project.assets.length > 0);
+  const analysisModelId = selectModel(provider.models, "analysis");
+  const heroModelId = input.heroCount ? selectModel(provider.models, "hero") : undefined;
+  const imageModelId = input.detailCount ? selectModel(provider.models, "detail") : heroModelId!;
+  const providerSnapshot = snapshotProvider(provider);
   const checkpoint: V4Checkpoint = { workflowVersion: 4, stage: "PREPARE", images: [], imageReviews: {}, answers: [], attempts: {}, timings: {} };
   let run;
   try {
@@ -132,7 +150,7 @@ export async function createV4DetailRun(projectId: string, raw: unknown, credent
       const same = await tx.detailRun.findUnique({ where: { projectId_idempotencyKey: { projectId, idempotencyKey: input.idempotencyKey } } });
       if (same) return same;
       if (await tx.detailRun.findFirst({ where: { projectId, OR: [{ status: { in: active } }, { leaseToken: { not: null }, leaseUntil: { gt: new Date() } }] } })) throw new Error("当前项目仍有任务或已发出的请求正在收尾，请稍后继续。");
-      return tx.detailRun.create({ data: { projectId, idempotencyKey: input.idempotencyKey, input: json({ ...input, workflowVersion: 4, planningModelId, imageModelId, editModelId }), checkpoint: json(checkpoint), leaseUntil: new Date(Date.now() + 60000) } });
+      return tx.detailRun.create({ data: { projectId, idempotencyKey: input.idempotencyKey, input: json({ ...input, workflowVersion: 4, planningModelId, analysisModelId, heroModelId, imageModelId, providerSnapshot }), checkpoint: json(checkpoint), leaseUntil: new Date(Date.now() + 60000) } });
     });
   } catch (error) {
     // Two browser retries can pass the read above at the same time. Treat the
@@ -156,6 +174,7 @@ function launchV4(runId: string, credentials: RequestProviderCredentials) {
 }
 
 export async function controlV4DetailRun(projectId: string, runId: string, action: "answers" | "suggestions" | "resume" | "cancel", raw: unknown, credentials: RequestProviderCredentials) {
+  if (action !== "cancel") await projectForRun(projectId);
   await getV4DetailRun(projectId, runId);
   const run = await prisma.detailRun.findFirstOrThrow({ where: { id: runId, projectId } });
   const cp = run.checkpoint as unknown as V4Checkpoint;
@@ -230,7 +249,7 @@ async function executeV4(runId: string) {
   const lease = await claimRunLease(runId);
   if (!lease) return;
   const run = await prisma.detailRun.findUniqueOrThrow({ where: { id: runId } }).catch(async error => { await lease.release(); throw error; });
-  const input = run.input as unknown as DetailRunInput & { planningModelId: string; imageModelId: string; editModelId: string };
+  const input = run.input as unknown as DetailRunInput & { planningModelId: string; analysisModelId?: string; heroModelId?: string; imageModelId: string; editModelId: string; providerSnapshot?: ProviderSnapshot };
   const cp = run.checkpoint as unknown as V4Checkpoint;
   cp.requests ??= {};
   cp.taskTiming = startTiming(cp.taskTiming);
@@ -258,28 +277,29 @@ async function executeV4(runId: string) {
   const requestOnce = async <T>(key: string, invoke: (requestId: string) => Promise<T>, save: (result: T) => void) => {
     await lease.assertActive();
     const previous = cp.requests![key];
+    const queryExisting = key.startsWith("GENERATE:") && previous?.upstreamTask && previous.upstreamTask.status !== "failed";
     const authorized = cp.retryAuthorized?.includes(key);
-    if (previous && previous.state !== "rejected" && !authorized) throw new Error(`${key} 上次请求结果未确认，已跳过；如需重新请求，请勾选可能再次计费的重试选项。`);
+    if (previous && previous.state !== "rejected" && !authorized && !queryExisting) throw new Error(`${key} 上次请求结果未确认，已跳过；如需重新请求，请勾选可能再次计费的重试选项。`);
     cp.retryAuthorized = cp.retryAuthorized?.filter(item => item !== key);
-    const requestId = randomUUID();
-    cp.requests![key] = { state: "running", requestId };
+    const requestId = queryExisting ? previous.requestId : randomUUID();
+    cp.requests![key] = { state: "running", requestId, ...(queryExisting ? { upstreamTask: previous.upstreamTask } : {}) };
     const previousTiming = cp.requestTimings![key];
     const timing = startTiming(previousTiming);
     cp.requestTimings![key] = { ...timing, firstStartedAt: previousTiming?.firstStartedAt || previousTiming?.startedAt || timing.startedAt };
-    cp.attempts[key] = (cp.attempts[key] || 0) + 1;
+    if (!queryExisting) cp.attempts[key] = (cp.attempts[key] || 0) + 1;
     await persist();
     await lease.assertActive();
     try {
       const result = await invoke(requestId);
       save(result);
       cp.requestTimings![key] = { ...cp.requestTimings![key], ...touchTiming(cp.requestTimings![key], true) };
-      cp.requests![key] = { state: "completed", requestId };
+      cp.requests![key] = { ...cp.requests![key], state: "completed", requestId };
       await persist();
       return result;
     } catch (error) {
       // The provider may have accepted/billed a request even when no result reached us.
       cp.requestTimings![key] = { ...cp.requestTimings![key], ...touchTiming(cp.requestTimings![key], true) };
-      cp.requests![key] = { state: isStructuredSchemaRejection(error) ? "rejected" : "uncertain", requestId, error: requestErrorMessage(error, "请求结果未确认，已有结果已保留。") };
+      cp.requests![key] = { ...cp.requests![key], state: isStructuredSchemaRejection(error) || (error as { code?: string })?.code === "LOCAL_BUDGET_PAUSED" ? "rejected" : "uncertain", requestId, error: requestErrorMessage(error, "请求结果未确认，已有结果已保留。") };
       await persist();
       throw error;
     }
@@ -288,7 +308,7 @@ async function executeV4(runId: string) {
     const current = await projectForRun(projectId);
     const snapshot = current.modelSnapshot as { creativePreferences?: { userDirection?: string } } | null;
     const userInstruction = input.instruction || snapshot?.creativePreferences?.userDirection || "";
-    const providerContext = await getProviderAdapter();
+    const providerContext = await getProviderAdapter(input.providerSnapshot?.id, input.providerSnapshot, { legacyTextProtocol: !input.providerSnapshot });
     const { adapter, provider, apiKey } = providerContext;
     const { product: productImages, style: styleImages } = workflowReferenceAssets(current.assets);
     const images = await Promise.all(productImages.map(a => imageData(a.id, projectId)));
@@ -300,11 +320,18 @@ async function executeV4(runId: string) {
       ...productImages.map(asset => ({ id: asset.id, kind: asset.type, fileName: asset.fileName })),
     ];
     const sectionSlots = Array.from({ length: input.heroCount + input.detailCount }, (_, sectionIndex) => ({ sectionIndex, kind: sectionIndex < input.heroCount ? "HERO" : "DETAIL" }));
-    const planInput = JSON.stringify({ productName: current.name, description: current.description, platform: current.platform, language: input.language, userInstruction, answers: cp.answers, confirmedSupplementalAnswers: cp.confirmedSupplementalAnswers, evidenceCatalog, requestedHeroCount: input.heroCount, requestedDetailCount: input.detailCount, sectionSlots, contentCoverageRules: contentCoverageInstructions, supplementalInputRules: supplementalInputInstructions });
+    const coverageRules = input.mode === "xhs" ? "小红书图文仅按用户主题与配图数量创作，不要求电商八类内容覆盖；contentCoverage返回空数组。" : input.detailCount === 0
+      ? "用户选择0张详情图，只生成指定数量的HERO，不得补充DETAIL。contentCoverage可引用承载对应内容的HERO下标；超出主图范围的模块标记not_applicable并说明用户仅要求主图，不因缺少详情图而要求补充信息。"
+      : `${input.heroCount === 0 ? "用户选择0张主图，只生成指定数量的DETAIL，不得补充HERO。\n" : ""}${contentCoverageInstructions}`;
+    const planInput = JSON.stringify({ productName: current.name, description: current.description, platform: current.platform, language: input.language, userInstruction, answers: cp.answers, confirmedSupplementalAnswers: cp.confirmedSupplementalAnswers, evidenceCatalog, requestedHeroCount: input.heroCount, requestedDetailCount: input.detailCount, sectionSlots, contentCoverageRules: coverageRules, supplementalInputRules: supplementalInputInstructions });
     const confirmedEstimates = cp.confirmedSupplementalAnswers?.some(answer => answer.basis === "model_estimate") === true;
     let plan = cp.plan;
-    const requestPlanSchema = planSchema;
-    if (!plan) plan = await requestOnce("PLAN", requestId => invokeStructured({ apiKey, baseUrl: provider.baseUrl, model: input.planningModelId, schema: requestPlanSchema, system: `${buildCommerceSystemPrompt(current.platform, ["hero_search", "feature_proof", "lifestyle", "material_closeup", "specification", "trust", "summary"])}\n你是商品规划模型。只返回 JSON。写出有证据的商品事实、买家价值和完整的逐屏内容；未知字段放入 missingFields，不要设计字体、背景或工具调用。sections[].copy 是最终需要呈现的完整文案，包含标题、解释、标签与已知参数，每条独立文案换行，不写Markdown装饰或制作说明，不用只有标题的提纲代替内容。\n完整详情任务的 contentCoverage 逐项交代八类内容：covered 必须引用真实承载该内容的详情页下标（全套从0开始，不能只引用HERO）；needs_input 写明具体缺失资料；not_applicable 写明产品或用户范围依据。少屏可以合并内容模块，不允许用“简洁”“留白”作为省略理由。缺失的用户要求应进入missingFields。\n证据引用规则：sections[].evidence 只能填写 evidenceCatalog 中的 id（user_description 或真实资产 ID），不要填写自然语言证据句。`, input: planInput, images, timeoutMs: 60000, maxAttempts: 1, requestId, monitor: { projectId, runId, operation: "v4_plan" } }), result => { cp.plan = result; });
+    const requestPlanSchema: z.ZodType<WorkflowPlan> = input.mode === "xhs" ? xhsPlanSchema : planSchema;
+    // Planning includes image input and complete page copy. Responses may send
+    // headers early while still generating; allow three minutes for completion.
+    if (!plan) plan = await requestOnce("PLAN", requestId => invokeStructured({ ...textSettings(input.providerSnapshot || {}), apiKey, baseUrl: provider.baseUrl, model: input.planningModelId, schema: requestPlanSchema, system: input.mode === "xhs"
+      ? `你是小红书图文规划模型。只返回 JSON。按用户主题创作标题、正文、3–8个标签和恰好${input.detailCount}张3:4竖版配图的完整文案，全部 sections.kind 为 DETAIL，不生成 HERO。post 包含 title、caption、hashtags、language，遵守用户字数与语言要求；productName 是主题名。不要编造个人经历、事实数据、品牌功效或来源。普通知识/插画创作不需要商品材质、尺寸等参数，contentCoverage 返回空数组，不套用电商详情页八模块。只有确实阻止主题创作的信息才列入 missingFields；无需补充则为空。sections[].copy 写该图可见的完整文字，evidence 只用 evidenceCatalog 内的 ID。`
+      : `${buildCommerceSystemPrompt(current.platform, ["hero_search", "feature_proof", "lifestyle", "material_closeup", "specification", "trust", "summary"])}\n你是商品规划模型。只返回 JSON。写出有证据的商品事实、买家价值和完整的逐屏内容；未知字段放入 missingFields，不要设计字体、背景或工具调用。sections[].copy 是最终需要呈现的完整文案，包含标题、解释、标签与已知参数，每条独立文案换行，不写Markdown装饰或制作说明，不用只有标题的提纲代替内容。\n${input.detailCount === 0 ? coverageRules : "完整详情任务的 contentCoverage 逐项交代八类内容：covered 必须引用真实承载该内容的详情页下标（全套从0开始，不能只引用HERO）；needs_input 写明具体缺失资料；not_applicable 写明产品或用户范围依据。少屏可以合并内容模块，不允许用“简洁”“留白”作为省略理由。缺失的用户要求应进入missingFields。"}\n证据引用规则：sections[].evidence 只能填写 evidenceCatalog 中的 id（user_description 或真实资产 ID），不要填写自然语言证据句。`, input: planInput, images, timeoutMs: 180000, maxAttempts: 1, requestId, monitor: { projectId, runId, operation: "v4_plan" } }), result => { cp.plan = result; });
     if (!plan) throw new Error("规划结果为空");
     if (confirmedEstimates) plan = { ...plan, sections: plan.sections.map(section => ({ ...section, title: customerFacingCopy(section.title) || "商品信息", copy: customerFacingCopy(section.copy) })) };
     const expected = input.heroCount + input.detailCount;
@@ -330,7 +357,7 @@ async function executeV4(runId: string) {
     const imageRequestsStarted = cp.images.some(image => image.assetId || image.state !== "pending")
       || Object.keys(cp.requests).some(key => key.startsWith("GENERATE:"))
       || current.assets.some(asset => asset.type === "GENERATED" && (asset.metadata as { runId?: string } | null)?.runId === runId);
-    const content = prepareContentCoverage(plan, !cp.artDirection && !imageRequestsStarted);
+    const content = input.mode === "xhs" ? { plan, warnings: [] } : prepareContentCoverage(plan, !cp.artDirection && !imageRequestsStarted);
     plan = content.plan;
     cp.plan = plan;
     cp.contentWarnings = [...new Set([...(cp.contentWarnings || []), ...content.warnings, ...(auditLanguage ? ["部分文案含制作说明，请在预览中核对措辞。"] : [])])];
@@ -375,6 +402,10 @@ async function executeV4(runId: string) {
     // Stable section IDs are part of the checkpoint. Never delete/recreate them on resume.
     const plannedSections = plan.sections;
     await lease.transaction(async tx => {
+      if (input.mode === "xhs" && plan.post) {
+        const latest = await tx.project.findUniqueOrThrow({ where: { id: projectId }, select: { modelSnapshot: true } });
+        await tx.project.update({ where: { id: projectId }, data: { modelSnapshot: json({ ...(latest.modelSnapshot as object || {}), socialPost: plan.post }) } });
+      }
       for (const [index, section] of plannedSections.entries()) await tx.pageSection.upsert({
         where: { projectId_sectionKey: { projectId, sectionKey: `v4-${index}` } },
         update: {},
@@ -383,7 +414,7 @@ async function executeV4(runId: string) {
     });
     await end("PLAN");
     await begin("ART_DIRECTION");
-    const art = cp.artDirection ?? await requestOnce("ART_DIRECTION", requestId => invokeStructured({ apiKey, baseUrl: provider.baseUrl, model: input.planningModelId, schema: directionSchema, system: `${buildCommerceSystemPrompt(current.platform, ["hero_search", "feature_proof", "lifestyle", "material_closeup", "specification", "trust", "summary"])}\n${confirmedAnswerCopyRules}\n你是视觉分镜模型。只返回完整 JSON。根据完整内容任务设计每张图的构图、光线、场景、文字和信息模块，sectionIndex必须对应规划从0开始的下标。plan.sections[].copy 是内容基础，可以自然润色标题、调整句式、标点和换行，无需逐字复刻；保持完整买家信息、参数标签、数值、单位和尺寸表，不把完整页面简化成只有标题。不要删除页面，不要编造规格。每张最终prompt必须完整描述主体、镜头、环境、光线、配色、细节/信息模块与排版，最终可见文字以textBlocks为准；不能只写标题或依赖前一张图。按内容安排场景、微距、标注、信息图与规格表，避免所有页面同一背景加整件产品。`, input: JSON.stringify({ plan, platform: current.platform, language: input.language, userInstruction, referenceRoles }), images: visualImages, timeoutMs: Math.max(90000, Math.min(180000, expected * 15000)), maxAttempts: 1, requestId, monitor: { projectId, runId, operation: "v4_art_direction" } }), result => { cp.artDirection = result; });
+    const art = cp.artDirection ?? await requestOnce("ART_DIRECTION", requestId => invokeStructured({ ...textSettings(input.providerSnapshot || {}), apiKey, baseUrl: provider.baseUrl, model: input.planningModelId, schema: directionSchema, system: `${buildCommerceSystemPrompt(current.platform, ["hero_search", "feature_proof", "lifestyle", "material_closeup", "specification", "trust", "summary"])}\n${confirmedAnswerCopyRules}\n你是视觉分镜模型。只返回完整 JSON。根据完整内容任务设计每张图的构图、光线、场景、文字和信息模块，sectionIndex必须对应规划从0开始的下标。plan.sections[].copy 是内容基础，可以自然润色标题、调整句式、标点和换行，无需逐字复刻；保持完整买家信息、参数标签、数值、单位和尺寸表，不把完整页面简化成只有标题。不要删除页面，不要编造规格。每张最终prompt必须完整描述主体、镜头、环境、光线、配色、细节/信息模块与排版，最终可见文字以textBlocks为准；不能只写标题或依赖前一张图。按内容安排场景、微距、标注、信息图与规格表，避免所有页面同一背景加整件产品。`, input: JSON.stringify({ plan, platform: current.platform, language: input.language, userInstruction, referenceRoles }), images: visualImages, timeoutMs: Math.max(90000, Math.min(180000, expected * 15000)), maxAttempts: 1, requestId, monitor: { projectId, runId, operation: "v4_art_direction" } }), result => { cp.artDirection = result; });
     const savedSections = await prisma.pageSection.findMany({ where: { projectId, sectionKey: { in: plan.sections.map((_, index) => `v4-${index}`) } }, orderBy: { order: "asc" } });
     if (art.sections.length !== expected) throw new Error("视觉分镜数量与页面数量不一致");
     const readableCopy = prepareReadableCopy(plan.sections, confirmedEstimates ? art.sections.map(cleanCustomerDirection) : art.sections);
@@ -421,13 +452,19 @@ async function executeV4(runId: string) {
     const renderOne = async (progress: V4Checkpoint["images"][number], section: typeof sections[number]) => {
       if (progress.assetId) return;
       const key = `GENERATE:${section.id}`;
-      if (progress.state === "uncertain" && (!cp.retryAuthorized?.includes(key) || progress.correctionCount >= 1)) return;
+      const upstreamTask = cp.requests![key]?.upstreamTask;
+      const queryExisting = upstreamTask && upstreamTask.status !== "failed";
+      if (progress.state === "uncertain" && !queryExisting && (!cp.retryAuthorized?.includes(key) || progress.correctionCount >= 1)) return;
       await lease.assertActive();
-      if (progress.state === "uncertain") progress.correctionCount++;
+      if (progress.state === "uncertain" && !queryExisting) progress.correctionCount++;
       progress.state = "generating"; await persist(`GENERATE:${section.title}`);
       try {
         await requestOnce(key, async requestId => {
-          const source = await adapter.generateImageOnce({ model: input.imageModelId, prompt: section.visualPrompt, quality: input.quality, background: settings.background, outputFormat: settings.outputFormat, outputCompression: settings.outputCompression, moderation: settings.moderation, ...(settings.size && settings.size !== "auto" ? { size: settings.size } : { aspectRatio: section.type === "HERO" ? "1:1" : "3:4" }), referenceImages: visualImages, timeoutMs: 180000, monitor: { projectId, sectionId: section.id, runId, operation: "v4_image_generation" } });
+          const source = await adapter.generateImageOnce({ model: section.type === "HERO" ? input.heroModelId || input.imageModelId : input.imageModelId, prompt: section.visualPrompt, quality: input.quality, background: settings.background, outputFormat: settings.outputFormat, outputCompression: settings.outputCompression, moderation: settings.moderation, ...(settings.size && settings.size !== "auto" ? { size: settings.size } : { aspectRatio: section.type === "HERO" ? "1:1" : "3:4" }), referenceImages: visualImages, timeoutMs: 180000, monitor: { projectId, sectionId: section.id, runId, operation: "v4_image_generation" },
+            upstreamTask: cp.requests![key].upstreamTask,
+            onUpstreamTask: async task => { cp.requests![key].upstreamTask = task; await persist(); },
+            beforeSubmit: () => lease.assertActive(),
+          });
           const asset = await saveGeneratedImage({ projectId, sectionId: section.id, prompt: section.visualPrompt, source, metadata: { runId, requestId, workflowVersion: 4 } });
           await lease.transaction(async tx => { await tx.pageSection.update({ where: { id: section.id }, data: { currentImageAssetId: asset.id, status: "SUCCESS" } }); }, true);
           return asset;
@@ -435,6 +472,8 @@ async function executeV4(runId: string) {
       } catch (error) {
         if (error instanceof RunHalted) throw error;
         progress.state = "uncertain"; cp.lastError = { stage: "GENERATE", code: isTimeout(error) ? "TIMEOUT" : "IMAGE_REQUEST_FAILED", message: requestErrorMessage(error, "图片请求结果未确认，已保存的图片会保留。"), retryable: false }; await persist();
+        // Drain issued calls, but do not send every image to an unsupported route.
+        if (isImageEndpointError(error)) throw error;
       }
     };
     const hero = cp.images.find(i => sections.find(s => s.id === i.sectionId)?.type === "HERO");
@@ -451,7 +490,7 @@ async function executeV4(runId: string) {
     for (const progress of cp.images.filter(i => i.assetId && i.state === "generated")) {
       try {
         const reviewImage = await imageData(progress.assetId!, projectId);
-        await requestOnce(`IMAGE_REVIEW:${progress.sectionId}`, requestId => invokeStructured({ apiKey, baseUrl: provider.baseUrl, model: input.planningModelId, schema: imageReviewSchema, system: `你是图片质检模型。只返回 JSON。检查商品一致性、事实准确性、排版可读性、构图和连续性，只报告实际问题。标题同义改写、标点和换行差异不算缺陷；不要逐字对照规划文案，关注事实、参数、完整信息和可读性。${confirmedAnswerCopyRules}缺少内部来源说明不算图片缺陷。`, input: JSON.stringify({ section: sections.find(s => s.id === progress.sectionId)?.title, plan: cp.plan, art: cp.artDirection?.sections.find(s => s.sectionIndex === sections.find(s => s.id === progress.sectionId)?.order) }), images: [reviewImage], timeoutMs: 45000, maxAttempts: 1, requestId, monitor: { projectId, sectionId: progress.sectionId, runId, operation: "v4_image_review" } }), review => {
+        await requestOnce(`IMAGE_REVIEW:${progress.sectionId}`, requestId => invokeStructured({ ...textSettings(input.providerSnapshot || {}), apiKey, baseUrl: provider.baseUrl, model: input.analysisModelId || input.planningModelId, schema: imageReviewSchema, system: `你是图片质检模型。只返回 JSON。检查商品一致性、事实准确性、排版可读性、构图和连续性，只报告实际问题。标题同义改写、标点和换行差异不算缺陷；不要逐字对照规划文案，关注事实、参数、完整信息和可读性。${confirmedAnswerCopyRules}缺少内部来源说明不算图片缺陷。`, input: JSON.stringify({ section: sections.find(s => s.id === progress.sectionId)?.title, plan: cp.plan, art: cp.artDirection?.sections.find(s => s.sectionIndex === sections.find(s => s.id === progress.sectionId)?.order) }), images: [reviewImage], timeoutMs: 45000, maxAttempts: 1, requestId, monitor: { projectId, sectionId: progress.sectionId, runId, operation: "v4_image_review" } }), review => {
           const result = { ...review, passed: review.passed && !review.issues.some(issue => issue.severity === "error") };
           progress.check = result; progress.state = "checked"; cp.imageReviews[progress.sectionId] = result;
         });
@@ -478,7 +517,7 @@ async function executeV4(runId: string) {
           if (saved) { delete cp.setReviewGroups[key]; delete cp.requests![key]; }
           try {
             const groupImages = await Promise.all(reviewImages.map(image => imageData(image.assetId!, projectId)));
-            await requestOnce(key, requestId => invokeStructured({ apiKey, baseUrl: provider.baseUrl, model: input.planningModelId, schema: setReviewSchema, system: `你是整套页面检查模型。只返回 JSON。标题同义改写、标点和换行差异不算缺陷；只检查意思丢失、错误参数或不可读文字。依据plan.contentCoverage和逐屏copy检查实际图片的信息覆盖、商品一致性、重复构图、文字与连续性。imageOrder 给出本组图片的全套 sectionIndex，issues.sectionIndexes 必须引用这些全套下标。超过12张时分组检查，本组看不到的图片不要猜测。视觉统一不能以删除内容换取；只有内容错误、遮挡或不可读才指出具体问题。不删除图片，不要求全套改成纯色背景。${confirmedAnswerCopyRules}缺少内部来源说明不算图片缺陷。`, input: JSON.stringify({ plan: cp.plan, artDirection: cp.artDirection, imageOrder: reviewImages.map((image, index) => ({ sectionIndex: start + index, title: image.title })) }), images: groupImages, timeoutMs: 60000, maxAttempts: 1, requestId, monitor: { projectId, runId, operation: "v4_set_review" } }), result => { cp.setReviewGroups![key] = { assetIds: groupAssets, result }; });
+            await requestOnce(key, requestId => invokeStructured({ ...textSettings(input.providerSnapshot || {}), apiKey, baseUrl: provider.baseUrl, model: input.analysisModelId || input.planningModelId, schema: setReviewSchema, system: `你是整套页面检查模型。只返回 JSON。标题同义改写、标点和换行差异不算缺陷；只检查意思丢失、错误参数或不可读文字。依据plan.contentCoverage和逐屏copy检查实际图片的信息覆盖、商品一致性、重复构图、文字与连续性。imageOrder 给出本组图片的全套 sectionIndex，issues.sectionIndexes 必须引用这些全套下标。超过12张时分组检查，本组看不到的图片不要猜测。视觉统一不能以删除内容换取；只有内容错误、遮挡或不可读才指出具体问题。不删除图片，不要求全套改成纯色背景。${confirmedAnswerCopyRules}缺少内部来源说明不算图片缺陷。`, input: JSON.stringify({ plan: cp.plan, artDirection: cp.artDirection, imageOrder: reviewImages.map((image, index) => ({ sectionIndex: start + index, title: image.title })) }), images: groupImages, timeoutMs: 60000, maxAttempts: 1, requestId, monitor: { projectId, runId, operation: "v4_set_review" } }), result => { cp.setReviewGroups![key] = { assetIds: groupAssets, result }; });
           } catch (error) {
             if (error instanceof RunHalted) throw error;
             cp.lastError = { stage: "SET_REVIEW", code: isTimeout(error) ? "TIMEOUT" : "REVIEW_FAILED", message: requestErrorMessage(error, "整套检查未完成，图片已保留，请人工核对。"), retryable: false }; await persist();

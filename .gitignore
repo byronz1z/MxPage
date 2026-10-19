@@ -17,6 +17,8 @@
 
 # next.js
 /.next/
+/.next-browser-*/
+/.browser-tsconfig-*.json
 /.next-desktop/
 /out/
 
@@ -54,6 +56,7 @@ next-env.d.ts
 
 # local data
 /storage/
+/storage-backups/
 /prisma/dev.db
 *.db-wal
 *.db-shm

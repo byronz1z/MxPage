@@ -1,11 +1,13 @@
 "use client";
-import { heroCountOptions, detailCountOptions } from "@/lib/utils/image-counts";
+import { heroCountOptions, detailCountOptions, hasOutputImages, OUTPUT_COUNT_ERROR } from "@/lib/utils/image-counts";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { FolderOpen, Loader2, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
+import { useImageCapabilities, ImageCapabilitySummary, ImageQualitySelect } from "@/components/providers/image-capability-controls";
 import { Textarea } from "@/components/ui/textarea";
 import { groupProductFiles } from "@/lib/detail-runs/batch-files";
 import { fileToBase64Payload } from "@/lib/utils/base64-upload";
@@ -13,6 +15,7 @@ import { contentLanguageLabels, contentLanguageOptions, type ContentLanguage } f
 import { platformLabels, platformOptions } from "@/types/domain";
 import { StyleReferencePicker } from "./style-reference-picker";
 import { translationQueue } from "@/lib/translation/client-queue";
+import { validateUploadFiles } from "@/lib/storage/upload-limits";
 
 type Group = { key: string; name: string; files: File[] };
 type Batch = { id: string; status: string; error?: string | null; items: { projectId: string; ready?: boolean; language?: ContentLanguage; runId?: string; name: string; status: string; message: string; translationProgress?: { completed: number; failed: number; total: number }; failures?: { title: string; message: string }[]; images: { id: string; type: string; url: string | null }[] }[] };
@@ -21,6 +24,8 @@ import { ApiRequestError, fetchApiProgress, readApiResponse as data, requestErro
 const post = (url: string, body: unknown) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then(data);
 
 export function BatchDetailWorkspace({ translation = false }: { translation?: boolean }) {
+  const router = useRouter();
+  const imageModels = useImageCapabilities(translation ? "edit" : "hero,detail");
   const storageKey = translation ? "mxpage:last-translation-batch" : "mxpage:last-detail-batch";
   const [uploadMode, setUploadMode] = useState<"single" | "multiple" | "folder">("single");
   const [languages, setLanguages] = useState<ContentLanguage[]>(["en-US"]);
@@ -67,7 +72,7 @@ export function BatchDetailWorkspace({ translation = false }: { translation?: bo
     try {
       if (translation && uploadMode !== "folder") {
         if (!files.length || files.length > (uploadMode === "single" ? 1 : 30)) throw new Error(uploadMode === "single" ? "单张翻译请选择一张图片。" : "每套最多 30 张图片。");
-        if (files.some(f => !/\.(png|jpe?g|webp)$/i.test(f.name) || f.size > 10 * 1024 * 1024)) throw new Error("支持 PNG、JPEG、WebP，每张不超过 10MB。");
+        validateUploadFiles(files);
         const ordered = [...files].sort((a,b) => a.name.localeCompare(b.name, "zh-CN", { numeric: true }));
         setGroups([{ key: "images", name: ordered[0].name.replace(/\.[^.]+$/, ""), files: ordered }]); setIgnored(0); upload.current = { id: "", projects: [] }; setPrepared(false); return;
       }
@@ -77,11 +82,16 @@ export function BatchDetailWorkspace({ translation = false }: { translation?: bo
     } catch (error) { toast.error(error instanceof Error ? error.message : "文件夹读取失败"); }
   }
   async function start() {
+    if (!translation && !hasOutputImages(heroCount, detailCount)) { toast.error(OUTPUT_COUNT_ERROR); return; }
     if (pending.current || !groups.length || running || (translation && !languages.length)) return;
+    if (imageModels.some(model => !model.qualities.includes(quality))) { toast.error("当前模型不支持所选画质，请重新选择。"); return; }
+    try { validateUploadFiles(groups.flatMap(group => group.files)); }
+    catch (error) { toast.error(error instanceof Error ? error.message : "图片校验失败"); return; }
     if (translation) {
-      translationQueue.enqueue({ groups, languages: [...languages], quality, instruction: description });
-      setGroups([]); setPreviews([]); setIgnored(0);
-      toast.success("已加入右下角任务队列，可以离开当前页面");
+      pending.current = true;
+      setBusy(true);
+      const id = translationQueue.enqueue({ groups, languages: [...languages], quality, instruction: description });
+      router.push(`/translate/${encodeURIComponent(id)}`);
       return;
     }
     pending.current = true; setBusy(true); setPrepared(true);
@@ -134,21 +144,22 @@ export function BatchDetailWorkspace({ translation = false }: { translation?: bo
       <fieldset disabled={busy || prepared} className="space-y-6 disabled:opacity-70">
         {translation && <div className="flex flex-wrap gap-2" role="group" aria-label="翻译上传模式">{(["single", "multiple", "folder"] as const).map(mode => <Button key={mode} type="button" variant={uploadMode === mode ? "default" : "outline"} aria-pressed={uploadMode === mode} onClick={() => { setUploadMode(mode); setGroups([]); }}>{mode === "single" ? "单张翻译" : mode === "multiple" ? "多张翻译" : "文件夹批量"}</Button>)}</div>}
         <input key={translation ? uploadMode : "folder"} ref={input} type="file" accept="image/png,image/jpeg,image/webp" multiple={!translation || uploadMode !== "single"} {...(!translation || uploadMode === "folder" ? { webkitdirectory: "", directory: "" } : {})} className="hidden" aria-label="选择待处理图片" onChange={e => { choose(Array.from(e.target.files || [])); e.target.value = ""; }}/>
-        <div onDragOver={e => { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = !busy && !prepared && translation && uploadMode !== "folder" ? "copy" : "none"; }} onDrop={e => { e.preventDefault(); e.stopPropagation(); if (!busy && !prepared && translation && uploadMode !== "folder") choose(Array.from(e.dataTransfer.files)); }} className="mx-auto flex aspect-square w-full max-w-sm flex-col items-center justify-center gap-4 rounded-3xl border-2 border-dashed border-input bg-background p-6 text-center"><FolderOpen className="h-9 w-9 text-muted-foreground"/><p className="font-medium">{translation && uploadMode !== "folder" ? "拖入此方框或选择详情图片" : "选择包含图片的文件夹"}</p><p className="text-sm leading-6 text-muted-foreground">{translation && uploadMode !== "folder" ? "保留商品、配色和排版，翻译图中文字" : "平铺图片：每张一套；子文件夹：每个文件夹一套"}</p><Button variant="outline" onClick={() => input.current?.click()}>{translation && uploadMode !== "folder" ? "选择图片" : groups.length ? "重新选择文件夹" : "选择文件夹"}</Button><p className="text-xs text-muted-foreground">{translation ? "每套最多 30 张" : "每商品最多 8 张"} · 单图 10MB · 文件夹最多 50 套</p></div>
+        <div onDragOver={e => { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = !busy && !prepared && translation && uploadMode !== "folder" ? "copy" : "none"; }} onDrop={e => { e.preventDefault(); e.stopPropagation(); if (!busy && !prepared && translation && uploadMode !== "folder") choose(Array.from(e.dataTransfer.files)); }} className="mx-auto flex aspect-square w-full max-w-sm flex-col items-center justify-center gap-4 rounded-3xl border-2 border-dashed border-input bg-background p-6 text-center"><FolderOpen className="h-9 w-9 text-muted-foreground"/><p className="font-medium">{translation && uploadMode !== "folder" ? "拖入此方框或选择详情图片" : "选择包含图片的文件夹"}</p><p className="text-sm leading-6 text-muted-foreground">{translation && uploadMode !== "folder" ? "保留商品、配色和排版，翻译图中文字" : "平铺图片：每张一套；子文件夹：每个文件夹一套"}</p><Button variant="outline" onClick={() => input.current?.click()}>{translation && uploadMode !== "folder" ? "选择图片" : groups.length ? "重新选择文件夹" : "选择文件夹"}</Button><p className="text-xs text-muted-foreground">{translation ? "每套最多 30 张" : "每商品最多 8 张"} · 单图 20MB · 文件夹最多 50 套</p></div>
         {translation && <fieldset className="space-y-3"><legend className="mb-3 text-sm font-medium">目标语言（可多选）</legend><div className="flex flex-wrap gap-2">{contentLanguageOptions.map(l => <label key={l} className="flex cursor-pointer items-center gap-2 rounded-xl border bg-card px-3 py-2 text-sm"><input type="checkbox" checked={languages.includes(l)} onChange={e => setLanguages(e.target.checked ? [...languages,l] : languages.filter(v=>v!==l))}/>{contentLanguageLabels[l]}</label>)}</div></fieldset>}
         {!!groups.length && <div className="space-y-3"><p className="text-sm font-medium">识别到 {groups.length} 套，共 {groups.reduce((n,g)=>n+g.files.length,0)} 张图片{ignored > 0 ? `，已忽略 ${ignored} 个非图片文件` : ""}</p><p className="text-xs text-muted-foreground">{translation ? "图片按文件名自然排序，每个目标语言保留相同顺序。" : "按文件名自然排序，第一张作为主图。"}</p><div className="grid max-h-80 grid-cols-2 gap-3 overflow-auto sm:grid-cols-3">{groups.map((group,i) => <div key={group.key} className="relative flex items-center gap-3 rounded-xl border bg-card p-3"><img src={previews[i]} alt="" className="h-12 w-12 rounded-lg object-contain"/><div className="min-w-0"><p className="truncate pr-3 text-sm">{group.name}</p><p className="text-xs text-muted-foreground">{group.files.length} 张素材</p></div><button type="button" aria-label={`移除商品 ${group.name}`} className="absolute right-1 top-1 p-1" onClick={() => setGroups(groups.filter((_,j)=>j!==i))}><X size={12}/></button></div>)}</div></div>}
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
           {!translation && <label className="space-y-2 text-sm">发布平台<Select value={platform} onValueChange={setPlatform}>{platformOptions.map(p=><option key={p} value={p}>{platformLabels[p]}</option>)}</Select></label>}
           {!translation && <label className="space-y-2 text-sm">图片语言<Select value={language} onValueChange={setLanguage}>{contentLanguageOptions.map(l=><option key={l} value={l}>{contentLanguageLabels[l]}</option>)}</Select></label>}
-          <label className="space-y-2 text-sm">图像画质<Select value={quality} onValueChange={setQuality}><option value="auto">自动</option><option value="low">低 · 快速</option><option value="medium">中 · 平衡</option><option value="high">高 · 精细</option></Select></label>
+          <label className="space-y-2 text-sm">图像画质<ImageQualitySelect value={quality} onChange={setQuality} models={imageModels}/><ImageCapabilitySummary models={imageModels}/></label>
           {!translation && <label className="space-y-2 text-sm">每商品头图<Select value={heroCount} onValueChange={v=>setHeroCount(Number(v))}>{heroCountOptions.map(n=><option key={n}>{n}</option>)}</Select></label>}
           {!translation && <label className="space-y-2 text-sm">每商品详情图<Select value={detailCount} onValueChange={v=>setDetailCount(Number(v))}>{detailCountOptions.map(n=><option key={n}>{n}</option>)}</Select></label>}
         </div>
         <label className="block space-y-2 text-sm">{translation ? "翻译要求或专有名词（可选）" : "整批商品补充信息（可选）"}<Textarea value={description} onChange={e=>setDescription(e.target.value)} maxLength={4000} placeholder={translation ? "例如品牌名称保留原文、特定词语的翻译。" : "例如商品用途、已确认规格或目标人群。"}/></label>
         {!translation && <><label className="block space-y-2 text-sm">整批自定义视觉要求（可选）<Textarea value={direction} onChange={e=>setDirection(e.target.value)} maxLength={1200} placeholder="留空时，按每件商品选择摄影、配色和构图。"/></label><StyleReferencePicker files={styleFiles} onChange={setStyleFiles} disabled={busy || prepared} batch/></>}
       </fieldset>
-      <Button className="h-12 w-full" disabled={busy || !groups.length || (translation && !languages.length)} onClick={start}>{busy && <Loader2 className="mr-2 h-4 w-4 animate-spin"/>}{busy ? stage : translation ? `开始翻译 · ${languages.length} 种语言 / ${groups.reduce((n,g)=>n+g.files.length,0)*languages.length} 张` : `开始批量生成 · ${groups.length} 套 / ${groups.length*(heroCount+detailCount)} 张`}</Button>
-      <p className="text-xs leading-6 text-muted-foreground">{translation ? "点击开始后，可切换页面并在右下角查看队列进度。显示“后台翻译中”后，刷新或关闭页面也不影响任务。每批最多同时翻译 2 张，结果自动保存到“我的作品”，失败图片可手动重试。" : "确认分组后开始。逐商品生成，遇到需补问或失败的商品会保留现场并继续下一件；每张最多自动修正一次。任务启动后由服务端执行。"}</p>
+      {!translation && !hasOutputImages(heroCount, detailCount) && <p role="alert" className="text-sm text-destructive">{OUTPUT_COUNT_ERROR}</p>}
+      <Button className="h-12 w-full" disabled={busy || !groups.length || (translation ? !languages.length : !hasOutputImages(heroCount, detailCount))} onClick={start}>{busy && <Loader2 className="mr-2 h-4 w-4 animate-spin"/>}{busy ? stage : translation ? `开始翻译 · ${languages.length} 种语言 / ${groups.reduce((n,g)=>n+g.files.length,0)*languages.length} 张` : `开始批量生成 · ${groups.length} 套 / ${groups.length*(heroCount+detailCount)} 张`}</Button>
+      <p className="text-xs leading-6 text-muted-foreground">{translation ? "点击开始后进入独立页面，查看上传、翻译进度和译图预览。显示“后台翻译中”后，刷新或关闭页面也不影响任务。每批最多同时翻译 2 张，每套每种语言只保存一份结果作品，失败图片可手动重试。" : "确认分组后开始。逐商品生成，遇到需补问或失败的商品会保留现场并继续下一件；每张最多自动修正一次。任务启动后由服务端执行。"}</p>
     </>}
     {pollError && <p role="alert" className="text-sm text-destructive">{pollError} <Button variant="ghost" size="sm" onClick={reset}>清除本地批次视图</Button></p>}
     {batch && <div className="space-y-5"><div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-card p-5"><div><p className="font-medium">已完成 {batch.items.filter(i=>i.status==="COMPLETED").length} / {batch.items.length} 套</p><p className="mt-1 text-sm text-muted-foreground">{running ? translation ? "正在后台翻译，每张完成即保存，可刷新页面查看进度。" : "正在后台逐套生成，可切换模式或刷新页面。" : finishing ? "正在保存当前图片请求，请稍后继续。" : batch.error || (translation ? "全部翻译完成" : "全部生成完成")}</p></div><div className="flex flex-wrap gap-2">{running ? <Button disabled={busy} variant="outline" onClick={()=>control("cancel")}>停止批次</Button> : <><Button disabled={busy || finishing} variant="outline" onClick={reset}>新建批次</Button>{batch.status !== "SUCCESS" && (!translation || hasPending) && <Button disabled={busy || finishing} onClick={()=>control("resume")}>继续未完成队列</Button>}{translation && hasFailedImages && <Button disabled={busy || finishing} onClick={()=>control("resume", true)}>重试失败图片</Button>}</>}</div></div>

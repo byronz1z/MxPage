@@ -137,6 +137,20 @@ test("successful responses mentioning billing do not trigger quota alerts", asyn
   assert.equal(logged.quotaState, "ok");
 });
 
+test("Gemini image output is counted without retaining image data or classifying vision as generation", async () => {
+  const endpoint = "https://billing.test/google/v1beta/models/test:generateContent";
+  const body = { generationConfig: { responseModalities: ["TEXT", "IMAGE"] } };
+  assert.equal(monitor.inferCategory(endpoint, body), "image_generation");
+  assert.equal(monitor.inferCategory(endpoint, { generationConfig: { responseModalities: ["TEXT"] } }), "google_generate_content");
+  const row = await log({ endpoint, category: monitor.inferCategory(endpoint, body), responseBody: JSON.stringify({ candidates: [{ content: { parts: [
+    { text: "image caption" }, { inlineData: { mimeType: "image/png", data: "private-image-bytes" } },
+    { inline_data: { mime_type: "image/jpeg", data: "private-second-image" } },
+    { inlineData: { mimeType: "audio/wav", data: "private-audio" } },
+  ] } }] }) });
+  assert.equal(row.outputImageCount, 2);
+  assert.doesNotMatch(JSON.stringify(row), /private-image-bytes|private-second-image|private-audio/);
+});
+
 test("usage logs scope availability to a credential fingerprint without storing the key", async () => {
   const { runWithProviderCredentials, providerCredentialFingerprint } = await import("../lib/services/provider-runtime");
   const apiKey = "test-key-for-availability-only";
@@ -156,7 +170,10 @@ test("structured responses record returned usage even on invalid JSON, exactly o
     calls++;
     return Response.json({ id: "mock", object: "chat.completion", created: 1, model: "gpt-6-luna", choices: [{ index: 0, message: { role: "assistant", content: calls === 1 ? "invalid JSON" : '{"ok":true}' }, finish_reason: "stop" }], usage: { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 } });
   };
-  const result = await invokeStructured({ apiKey: "mock-test-only", baseUrl: "https://billing.test/v1", model: "gpt-6-luna", schema: z.object({ ok: z.boolean() }), system: "test system prompt", input: "sensitive test input", timeoutMs: 5000 });
+  const request = { apiKey: "mock-test-only", baseUrl: "https://billing.test/v1", model: "gpt-6-luna", schema: z.object({ ok: z.boolean() }), system: "test system prompt", input: "sensitive test input", timeoutMs: 5000 };
+  await assert.rejects(invokeStructured(request), SyntaxError);
+  assert.equal(calls, 1, "invalid JSON must not cause an implicit paid repair");
+  const result = await invokeStructured(request); // Explicit caller retry.
   assert.equal(result.ok, true); assert.equal(calls, 2);
   const entries = await monitor.listApiUsageEntries();
   assert.equal(entries.length, 2); assert.equal(entries.filter(entry => entry.success).length, 1);

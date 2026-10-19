@@ -1,3 +1,4 @@
+import { getProviderAdapter, snapshotProvider, type ProviderSnapshot } from "@/lib/services/provider-service";
 import { z } from "zod";
 import { startTiming, touchTiming } from "@/lib/tasks/timing";
 import { Prisma } from "@prisma/client";
@@ -6,6 +7,7 @@ import { assetPublicUrl } from "@/lib/storage/asset-manager";
 import { runWithProviderCredentials, type RequestProviderCredentials } from "@/lib/services/provider-runtime";
 import { createDetailRun, controlDetailRun, getDetailRun } from "./service";
 import { detailRunInputSchema } from "./contracts";
+import { hasOutputImages, OUTPUT_COUNT_ERROR } from "@/lib/utils/image-counts";
 import { contentLanguageOptions, type ContentLanguage } from "@/lib/utils/content-language";
 import { prepareTranslationProject, translationProjectId, translationTaskId, getTranslationTask, runTranslationProject } from "@/lib/translation/service";
 import { translationSummary } from "@/lib/translation/contracts";
@@ -14,11 +16,13 @@ import { isStyleReference } from "@/lib/utils/asset-purpose";
 export const batchInputSchema = z.object({
   id: z.string().uuid(),
   projectIds: z.array(z.string().min(1)).min(1).max(50).refine(ids => new Set(ids).size === ids.length),
-  options: detailRunInputSchema.pick({ language: true, quality: true, heroCount: true, detailCount: true }),
+  options: z.object({ language: detailRunInputSchema.shape.language, quality: detailRunInputSchema.shape.quality, heroCount: detailRunInputSchema.shape.heroCount, detailCount: detailRunInputSchema.shape.detailCount })
+    .refine(value => hasOutputImages(value.heroCount, value.detailCount), { message: OUTPUT_COUNT_ERROR, path: ["heroCount"] }),
   translations: z.array(z.enum(contentLanguageOptions)).min(1).max(10).refine(values => new Set(values).size === values.length).optional(),
   translationInstruction: z.string().max(4000).optional(),
+  reuseTranslationSources: z.boolean().optional(),
 });
-type BatchInput = z.infer<typeof batchInputSchema> & { workflow: "detail-batch-v1" };
+type BatchInput = z.infer<typeof batchInputSchema> & { workflow: "detail-batch-v1"; providerSnapshot?: ProviderSnapshot };
 type Item = { projectId: string; sourceProjectId?: string; language?: ContentLanguage; runId?: string; translationTaskId?: string; status: string; message: string };
 const json = (v: unknown) => JSON.parse(JSON.stringify(v)) as Prisma.InputJsonValue;
 const state = globalThis as typeof globalThis & { detailBatchWorkers?: Set<string> };
@@ -61,15 +65,22 @@ export async function startBatch(raw: unknown, credentials: RequestProviderCrede
   const input: BatchInput = { ...parsed, workflow: "detail-batch-v1" };
   const existing = await prisma.generationTask.findUnique({ where: { id: input.id } });
   if (existing) {
-    if (JSON.stringify(existing.inputPayload) !== JSON.stringify(input)) throw new Error("此批次标识已用于其他配置。");
+    if (JSON.stringify(batchInputSchema.parse(existing.inputPayload)) !== JSON.stringify(parsed)) throw new Error("此批次标识已用于其他配置。");
     return getBatch(input.id);
   }
   const projects = await prisma.project.findMany({ where: { id: { in: input.projectIds } }, include: { assets: { where: { type: { in: ["MAIN", "ANGLE", "DETAIL", "REFERENCE"] } } } } });
   const maxAssets = input.translations ? 30 : 8;
+  if (projects.some(project => typeof (project.modelSnapshot as { trashedAt?: unknown } | null)?.trashedAt === "string")) throw new Error("作品已在回收站，请先还原。");
   if (projects.length !== input.projectIds.length || projects.some(p => { const count = p.assets.filter(a => !isStyleReference(a)).length; return count < 1 || count > maxAssets; })) throw new Error(`每套须上传 1–${maxAssets} 张素材后再开始。`);
+  if (input.reuseTranslationSources) {
+    if (!input.translations || projects.some(p => (p.modelSnapshot as any)?.workType !== "translation" || (p.modelSnapshot as any)?.translationReady)) throw new Error("只能使用新上传的翻译项目作为结果。");
+    const occupied = await prisma.project.count({ where: { id: { in: input.projectIds }, OR: [{ sections: { some: {} } }, { tasks: { some: {} } }, { detailRuns: { some: {} } }] } });
+    if (occupied) throw new Error("已有作品不能作为新的翻译上传项目。");
+  }
+  input.providerSnapshot = await runWithProviderCredentials(credentials, async () => snapshotProvider((await getProviderAdapter(undefined, undefined, { textModelIds: input.translations ? [] : undefined })).provider));
   await prisma.project.upsert({ where: { id: systemId }, create: { id: systemId, name: "详情页批量任务", platform: "__mxpage_system_task__", style: "system" }, update: {} });
   try {
-    const items: Item[] = input.projectIds.flatMap(sourceId => input.translations ? input.translations.map(language => ({ projectId: translationProjectId(input.id, sourceId, language), sourceProjectId: sourceId, language, status: "QUEUED", message: "等待翻译" })) : [{ projectId: sourceId, status: "QUEUED", message: "等待生成" }]);
+    const items: Item[] = input.projectIds.flatMap(sourceId => input.translations ? input.translations.map((language, index) => ({ projectId: input.reuseTranslationSources && index === 0 ? sourceId : translationProjectId(input.id, sourceId, language), sourceProjectId: sourceId, language, status: "QUEUED", message: "等待翻译" })) : [{ projectId: sourceId, status: "QUEUED", message: "等待生成" }]);
     await prisma.generationTask.create({ data: { id: input.id, projectId: systemId, taskType: "BATCH_CREATE", inputPayload: json(input), outputPayload: json({ items }) } });
   } catch (error) {
     if (!await prisma.generationTask.findUnique({ where: { id: input.id } })) throw error;
@@ -95,7 +106,11 @@ export async function controlBatch(id: string, action: "cancel" | "resume", cred
 function launch(id: string, credentials: RequestProviderCredentials, retryFailed = false) {
   if (workers.has(id)) return;
   workers.add(id);
-  void runWithProviderCredentials(credentials, () => execute(id, credentials, retryFailed)).catch(() => {
+  void findBatch(id).then(task => {
+    const providerSnapshot = (task.inputPayload as unknown as BatchInput).providerSnapshot;
+    const frozen = { ...credentials, providerSnapshot, legacyTextProtocol: !providerSnapshot };
+    return runWithProviderCredentials(frozen, () => execute(id, frozen, retryFailed));
+  }).catch(() => {
     console.error("Batch worker stopped; its saved checkpoint can be recovered.");
   }).finally(() => workers.delete(id));
 }

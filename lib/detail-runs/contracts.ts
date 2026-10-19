@@ -1,4 +1,4 @@
-import { HERO_MIN, HERO_MAX, DETAIL_MIN, DETAIL_MAX, TOTAL_IMAGE_MAX } from "@/lib/utils/image-counts";
+import { HERO_MIN, HERO_MAX, DETAIL_MIN, DETAIL_MAX, TOTAL_IMAGE_MAX, hasOutputImages, OUTPUT_COUNT_ERROR } from "@/lib/utils/image-counts";
 import { z } from "zod";
 import { contentLanguageOptions } from "@/lib/utils/content-language";
 import type { ArtDirection, ArtReview } from "./art-direction";
@@ -27,7 +27,7 @@ export const detailRunInputSchema = z.object({
   mode: z.enum(["create", "xhs", "edit", "regenerate", "translate"]).default("create"),
   sectionId: z.string().optional(),
   instruction: z.string().trim().max(4000).default(""),
-});
+}).refine(value => hasOutputImages(value.heroCount, value.detailCount), { message: OUTPUT_COUNT_ERROR, path: ["heroCount"] });
 export type DetailRunInput = z.infer<typeof detailRunInputSchema>;
 export const planSchema = z.object({
   productName: z.string().min(1),

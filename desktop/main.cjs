@@ -6,15 +6,17 @@ const net = require("net");
 const path = require("path");
 const { spawn } = require("child_process");
 
-const { app, BrowserWindow, dialog } = require("electron");
+const { app, BrowserWindow, dialog, shell } = require("electron");
 
 const { toSqliteFileUrl } = require("../scripts/runtime-paths.cjs");
+const { createAgentBroker } = require("./agent-broker.cjs");
 
 let mainWindow = null;
 let splashWindow = null;
 let serverProcess = null;
 let serverUrl = null;
 let isQuitting = false;
+let agentBroker = null;
 
 function getWindowIcon() {
   return app.isPackaged
@@ -212,8 +214,9 @@ async function startNextServer(runtime) {
       ELECTRON_RUN_AS_NODE: "1",
     },
     windowsHide: true,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe", "ipc"],
   });
+  agentBroker.attach(serverProcess);
 
   let serverErrors = "";
 
@@ -253,7 +256,7 @@ function createSplashWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
 
@@ -393,7 +396,7 @@ function createMainWindow(url) {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
 
@@ -406,6 +409,14 @@ function createMainWindow(url) {
 
   mainWindow.on("closed", () => {
     mainWindow = null;
+  });
+
+  mainWindow.webContents.setWindowOpenHandler(({ url: target }) => {
+    if (/^https?:\/\//i.test(target)) void shell.openExternal(target);
+    return { action: "deny" };
+  });
+  mainWindow.webContents.on("will-navigate", (event, target) => {
+    if (new URL(target).origin !== new URL(url).origin) event.preventDefault();
   });
 
   return mainWindow.loadURL(url);
@@ -432,6 +443,7 @@ async function shutdownServerProcess() {
 
 async function bootstrapDesktopApp() {
   console.time("desktop:total");
+  agentBroker = createAgentBroker({ getWindow: () => mainWindow, getServerUrl: () => serverUrl });
 
   createSplashWindow();
   updateSplashStatus("正在准备本地运行环境...");
@@ -459,6 +471,7 @@ async function bootstrapDesktopApp() {
 
 app.on("before-quit", async () => {
   isQuitting = true;
+  await agentBroker?.close();
   await shutdownServerProcess();
 });
 

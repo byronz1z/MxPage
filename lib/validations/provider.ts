@@ -1,6 +1,8 @@
 import { z } from "zod";
 
 export const providerInputSchema = z.object({
+  textProtocol: z.enum(["auto", "chat_completions", "responses", "anthropic_messages", "gemini_native"]).default("auto"),
+  structuredOutputMode: z.enum(["json_schema", "json_object", "prompt_json"]).default("json_schema"),
   name: z.string().trim().min(2, "请输入 Provider 名称"),
   baseUrl: z.string().trim().url("请输入有效的 baseURL"),
   apiKey: z.string().trim().optional().default(""),

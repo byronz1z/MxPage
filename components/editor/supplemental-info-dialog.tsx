@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { buildSupplementalSubmission, supplementalQuestionsReady, type SupplementalQuestion, type SupplementalSelection, type SupplementalSubmission } from "@/lib/detail-runs/supplemental-input";
+import { buildSupplementalSubmission, supplementalQuestionIssues, supplementalQuestionsReady, type SupplementalQuestion, type SupplementalSelection, type SupplementalSubmission } from "@/lib/detail-runs/supplemental-input";
 
 type Props = {
   open: boolean;
@@ -103,6 +103,7 @@ export function SupplementalInfoDialog({ open, onOpenChange, questions, question
               </Button>
             </div>
           </form> : <div className="space-y-4 p-5 sm:p-6">
+            <p role="alert" className="text-sm leading-6 text-amber-700 dark:text-amber-400">{questionIssue || supplementalQuestionIssues(questions, [])}</p>
             <p className="text-sm text-muted-foreground">将进行一次商品候选推断，不会重新生成图片。生成后依次确认三个问题。</p>
             <Button disabled={disabled} onClick={() => void onPrepareSuggestions()}>{busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}生成具体选项</Button>
           </div>}

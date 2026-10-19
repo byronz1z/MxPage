@@ -1,7 +1,6 @@
 import type { MetadataRoute } from "next";
-import { publicSiteUrl } from "@/lib/seo";
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const site = publicSiteUrl();
-  return site ? [{ url: site.href, changeFrequency: "monthly", priority: 1 }] : [];
+  // The root is a personal workspace, not a public product landing page.
+  return [];
 }

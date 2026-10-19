@@ -47,6 +47,7 @@ async function main() {
       await assert.rejects(fs.access(path.join(standalone, name)), { code: "ENOENT" }, `Private build input leaked: ${name}`);
     }
     await run([path.join(standalone, "scripts", "apply-prisma-migrations.cjs")]);
+    await run([path.join(resources, "app", "scripts", "check-agent-driver.cjs"), path.join(resources, "app")]);
     // Prisma and sharp contain platform-specific binaries and must work on each native runner.
     await run(["-e", "(async()=>{const {PrismaClient}=require('@prisma/client');const db=new PrismaClient();try{if(await db.project.count()!==0)throw Error('Unexpected project data');await require('sharp')({create:{width:2,height:2,channels:4,background:'#fff'}}).png().toBuffer();}finally{await db.$disconnect();}})().catch(e=>{console.error(e);process.exit(1)})"]);
     const listener = net.createServer();
@@ -65,7 +66,7 @@ async function main() {
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
     assert.ok(ready, `Packaged server did not start: ${serverLog}`);
-    for (const route of ["/", "/translate", "/xiaohongshu", "/history", "/tasks", "/settings/providers", "/settings/profile", "/settings/about", "/monitor/usage", "/api/projects", "/llms.txt", "/assets/phone-mockup-frame.png"]) {
+    for (const route of ["/", "/agent", "/api/agent/sessions", "/settings/agent", "/translate", "/xiaohongshu", "/history", "/tasks", "/settings/providers", "/settings/profile", "/settings/about", "/monitor/usage", "/api/projects", "/llms.txt", "/assets/phone-mockup-frame.png"]) {
       const response = await fetch(`http://127.0.0.1:${env.PORT}${route}`, { signal: AbortSignal.timeout(15_000) });
       assert.equal(response.status, 200, `${route}: ${serverLog}`);
       if (route === "/api/projects") assert.deepEqual((await response.json()).data, []);

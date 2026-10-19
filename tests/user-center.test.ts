@@ -142,6 +142,16 @@ test("connection and image verification persist past fifteen minutes and configu
   }
 });
 
+test("Gemini image calls verify images without treating text, vision or probes as image output", () => {
+  for (const operation of ["v4_image_generation", "translate_image", "repaint_section_image"]) {
+    assert.equal(resolveImageApiStatus([entry({ category: "google_generate_content", operation })], config, now).imageVerification.state, "available");
+  }
+  for (const operation of ["v4_image_review", "provider_connection_probe", "v4_plan"]) {
+    assert.equal(resolveImageApiStatus([entry({ category: "google_generate_content", operation })], config, now).imageVerification.state, "unverified");
+  }
+  assert.equal(resolveImageApiStatus([entry({ category: "google_generate_content", operation: "v4_image_generation", success: false })], config, now).imageVerification.state, "unavailable");
+});
+
 test("a later probe refreshes service connection while preserving the actual image verification time", () => {
   const image = entry({ timestamp: new Date(now - 3 * 3_600_000).toISOString() });
   const probe = entry({ category: "chat", model: "gpt-6-luna", operation: "provider_connection_probe" });

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BookOpenText, FolderKanban, History, Languages } from "lucide-react";
+import { Bot, BookOpenText, FolderKanban, History, Languages } from "lucide-react";
 
 import { ApiStatusIndicator } from "@/components/layout/api-status-indicator";
 import { UserMenu } from "@/components/layout/user-menu";
@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 const appName = "MxPage";
 
 const navItems = [
+  { href: "/agent", label: "Agent 工作台", icon: Bot },
   { href: "/", label: "一键详情页", icon: FolderKanban },
   { href: "/translate", label: "详情页翻译", icon: Languages },
   { href: "/xiaohongshu", label: "小红书图文", icon: BookOpenText },

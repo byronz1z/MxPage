@@ -20,13 +20,13 @@ test("local deployments do not advertise indexable workspace URLs", () => {
   }
 });
 
-test("public metadata only advertises the configured homepage", () => {
+test("a public origin does not expose workspace routes through robots or sitemap", () => {
   const original = process.env.NEXT_PUBLIC_SITE_URL;
   try {
     process.env.NEXT_PUBLIC_SITE_URL = "https://mxpage.example.com/some-path";
-    assert.deepEqual(sitemap().map(item => item.url), ["https://mxpage.example.com/"]);
-    const rules = robots().rules as { disallow: string[] };
-    for (const route of ["/projects/", "/settings", "/api/", "/monitor/", "/tasks", "/history"]) assert.ok(rules.disallow.includes(route));
+    assert.equal(publicSiteUrl()?.origin, "https://mxpage.example.com");
+    assert.deepEqual(sitemap(), []);
+    assert.deepEqual(robots().rules, { userAgent: "*", allow: "/llms.txt", disallow: "/" });
     process.env.NEXT_PUBLIC_SITE_URL = "https://user:password@example.com";
     assert.equal(publicSiteUrl(), undefined);
   } finally {

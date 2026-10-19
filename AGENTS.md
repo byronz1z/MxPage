@@ -10,11 +10,20 @@ Read this file first when working on the repository. Product facts and links are
 - `npm run prisma:generate`, `npm run prisma:migrate`, `npm run dev` start source development.
 - `npm test` runs isolated model-free tests. `npm run test:detail` covers V4 recovery.
 - `npm run typecheck` checks TypeScript. `npm run build:desktop` uses `.next-desktop`.
+- `npm run lint` also rejects switch fallthrough, unreachable code and unused labels;
+  it uses the existing TypeScript compiler, not a placeholder or ESLint ruleset.
+- `docs/optimization-acceptance.md` documents query-only image recovery, optional
+  Agent monetary reservations, capability provenance and mock-only acceptance.
 - Never run a production build into the `.next` directory while a dev server uses it.
 - `npm run dist:green` builds Windows x64 ZIP; `npm run dist:mac` builds a ZIP on the
   current Mac architecture. Run `npm run smoke:desktop` against unpacked output.
 
 ## Architecture map
+
+- `lib/agent/`, `app/api/agent/`: independent Deep Agents tool loop, approvals, ledger,
+  SQLite checkpoints and SSE. See `docs/agent-workspace.md`. Do not put its loops in V4.
+- `desktop/agent-*.cjs`: private desktop authority and isolated Playwright profile.
+  Keep desktop control default-off until real GUI acceptance passes on each target.
 
 - `lib/detail-runs/service-v4.ts`: deterministic workflow, request ledger, checkpoints.
 - `lib/detail-runs/structured-model.ts`: single structured JSON model requests.
@@ -31,7 +40,9 @@ Read this file first when working on the repository. Product facts and links are
 
 1. New detail runs write `workflowVersion: 4`. Earlier workflows are read-only history;
    never route them into V4 automatically. Do not reintroduce `@openai/agents`, a Runner,
-   tool loops, or implicit model repair/retry loops.
+   tool loops, or implicit model repair/retry loops into V4. The independent `/agent`
+   workspace uses Deep Agents/LangGraph under `lib/agent/`; its approved tool loop
+   must not change V4 recovery, billing or retry semantics.
 2. Persist the request ID before dispatch. Reuse completed plans, storyboards, assets
    and reviews on resume. Preserve uncertain requests after timeout/disconnect; do not
    resend possibly billed requests without the user's explicit retry authorization.

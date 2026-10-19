@@ -1,9 +1,12 @@
 "use client";
+import { imageCapabilities } from "@/lib/ai/image-capabilities";
+import { normalizeOpenAiBaseUrl } from "@/lib/ai/text-protocol";
+import { ImageCapabilitySummary } from "./image-capability-controls";
 
 import { Select } from "@/components/ui/select";
 
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { toast } from "sonner";
 import { AlertTriangle, ChevronsUpDown, CopyPlus, History, ImagePlus, Loader2, LockKeyhole, PlugZap, ScanEye, TextCursorInput, Trash2, WandSparkles, type LucideIcon } from "lucide-react";
 
@@ -38,6 +41,8 @@ type ProviderModelRecord = {
 };
 
 type ProviderRecord = {
+  textProtocol?: string;
+  structuredOutputMode?: string;
   id: string;
   name: string;
   baseUrl: string;
@@ -270,8 +275,8 @@ function readStoredCredentials() {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(CLIENT_PROVIDER_STORAGE_KEY) || "{}") as { apiKey?: string; baseUrl?: string };
     return {
-      apiKey: parsed.apiKey ?? "",
-      baseUrl: parsed.baseUrl ?? "",
+      apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey.trim() : "",
+      baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl.trim() : "",
     };
   } catch {
     return { apiKey: "", baseUrl: "" };
@@ -296,37 +301,35 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
     () => providers.find((item) => item.id === selectedProviderId) ?? activeProvider,
     [providers, selectedProviderId, activeProvider],
   );
-  const [loading, setLoading] = useState<null | "configure" | "saveAsNew" | "activate" | "delete">(null);
+  const [loading, setLoading] = useState<null | "configure" | "refreshModels" | "saveAsNew" | "activate" | "delete">(null);
   const [probe, setProbe] = useState<{ status: "running" | "success" | "error"; message: string; endpoint?: string } | null>(null);
   const [deleteTargetId, setDeleteTargetId] = useState("");
   const [models, setModels] = useState<Array<GenericModelRecord>>(selectedProvider?.models ?? []);
   const [defaults, setDefaults] = useState<DefaultAssignments>(buildDefaults(selectedProvider ?? null));
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const pendingSaves = useRef<Record<string, number>>({});
+  const savedProviders = useRef<Record<string, ProviderRecord>>({});
+  const [saveStatus, setSaveStatus] = useState<Record<string, string>>({});
   const [form, setForm] = useState({
     id: selectedProvider?.id ?? "",
     name: selectedProvider?.name ?? "默认 GPT 模型服务",
-    baseUrl: lockedBaseUrl || selectedProvider?.baseUrl || "https://api.openai-proxy.org/v1",
+    baseUrl: lockedBaseUrl || selectedProvider?.baseUrl || "https://api.openai.com/v1",
     apiKey: "",
   });
 
   useEffect(() => {
     const stored = readStoredCredentials();
-    setForm((current) => ({
-      ...current,
-      baseUrl: lockedBaseUrl || stored.baseUrl || current.baseUrl,
-      apiKey: stored.apiKey || current.apiKey,
-    }));
-  }, [lockedBaseUrl]);
-
-  useEffect(() => {
-    const stored = readStoredCredentials();
     const nextProvider = selectedProvider ?? null;
+    if (nextProvider && pendingSaves.current[nextProvider.id]) return;
+    if (nextProvider) savedProviders.current[nextProvider.id] = nextProvider;
     setModels(nextProvider?.models ?? []);
     setDefaults(buildDefaults(nextProvider));
+    const baseUrl = lockedBaseUrl || nextProvider?.baseUrl || stored.baseUrl || "https://api.openai.com/v1";
     setForm({
       id: nextProvider?.id ?? "",
       name: nextProvider?.name ?? "默认 GPT 模型服务",
-      baseUrl: lockedBaseUrl || nextProvider?.baseUrl || stored.baseUrl || "https://api.openai-proxy.org/v1",
-      apiKey: stored.apiKey,
+      baseUrl,
+      apiKey: normalizeOpenAiBaseUrl(stored.baseUrl) === normalizeOpenAiBaseUrl(baseUrl) ? stored.apiKey : "",
     });
   }, [selectedProvider, lockedBaseUrl]);
 
@@ -343,9 +346,50 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
     [models],
   );
 
+  function saveSettings(patch: Partial<DefaultAssignments>) {
+    const provider = selectedProvider;
+    setProbe(null);
+    if (!provider || form.baseUrl.replace(/\/+$/, "") !== provider.baseUrl.replace(/\/+$/, "")) {
+      setSaveStatus(current => ({ ...current, [provider?.id || ""]: "尚未保存，请先探测并保存服务" }));
+      return;
+    }
+    const id = provider.id;
+    savedProviders.current[id] ??= provider;
+    pendingSaves.current[id] = (pendingSaves.current[id] || 0) + 1;
+    setSaveStatus(current => ({ ...current, [id]: "保存中…" }));
+    saveQueue.current = saveQueue.current.then(async () => {
+      let failed = false;
+      try {
+        const response = await fetch(`/api/providers/${encodeURIComponent(id)}/defaults`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch),
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.success) throw new Error(payload.error?.message || "模型设置保存失败");
+        savedProviders.current[id] = payload.data;
+        window.dispatchEvent(new Event("mxpage:provider-updated"));
+      } catch (error) {
+        failed = true;
+        toast.error(error instanceof Error ? error.message : "模型设置保存失败");
+      } finally {
+        pendingSaves.current[id]--;
+        if (!pendingSaves.current[id]) {
+          // Publish only the final response, so older saves cannot overwrite a newer selection.
+          setProviders(current => current.map(item => item.id === id ? { ...savedProviders.current[id] } : item));
+          setSaveStatus(current => ({ ...current, [id]: failed ? "保存失败，已恢复上次保存值" : "已保存；新任务生效" }));
+        }
+      }
+    });
+  }
+  function changeDefault(type: ModelTypeKey, value: string) {
+    const patch = type === "text" ? { planningModelId: value } : type === "vision" ? { analysisModelId: value } : type === "image_gen" ? { heroImageModelId: value, detailImageModelId: value } : { imageEditModelId: value };
+    setDefaults(current => ({ ...current, ...patch }));
+    saveSettings(patch);
+  }
   function updateForm(patch: Partial<typeof form>) {
     setProbe(null);
-    setForm((current) => ({ ...current, ...patch }));
+    setForm((current) => ({ ...current, ...patch,
+      ...(patch.baseUrl !== undefined && normalizeOpenAiBaseUrl(patch.baseUrl) !== normalizeOpenAiBaseUrl(current.baseUrl) ? { apiKey: "" } : {}),
+    }));
   }
 
   function currentSubmitValues() {
@@ -356,12 +400,6 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
       apiKey: form.apiKey.trim(),
       isActive: true,
     };
-  }
-
-  function persistCurrentCredentials() {
-    const values = currentSubmitValues();
-    writeStoredCredentials({ apiKey: values.apiKey, baseUrl: values.baseUrl });
-    return values;
   }
 
   function hydrateFromProviderPayload(data: any, nextSelectedId?: string | null) {
@@ -382,6 +420,12 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
       });
       const payload = await response.json();
       if (!payload.success) throw new Error(payload.error?.message ?? "切换历史服务失败");
+      const nextProvider = providers.find(provider => provider.id === providerId);
+      const stored = readStoredCredentials();
+      const baseUrl = lockedBaseUrl || nextProvider?.baseUrl || "";
+      if (normalizeOpenAiBaseUrl(stored.baseUrl) !== normalizeOpenAiBaseUrl(baseUrl)) {
+        writeStoredCredentials({ baseUrl, apiKey: "" });
+      }
       hydrateFromProviderPayload(payload.data, providerId);
       toast.success("已切换为当前服务");
     } catch (error) {
@@ -440,16 +484,21 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
     if (!response.ok || !payload.success) throw new Error(payload.error?.message ?? "配置保存失败");
 
     const savedProviderId = payload.data?.savedProviderId ?? values.id ?? "";
+    // Failed discovery/saves must not replace the credentials used by other tasks.
+    if (values.isActive) writeStoredCredentials({ apiKey: values.apiKey, baseUrl: values.baseUrl });
     hydrateFromProviderPayload(payload.data, savedProviderId);
   }
 
-  async function handleOneClickConfigure() {
-    setLoading("configure");
+  async function handleOneClickConfigure(verifyConnection = true) {
+    setLoading(verifyConnection ? "configure" : "refreshModels");
+    await saveQueue.current;
     setProbe({ status: "running", message: "正在连接服务并探测模型…" });
     let saved = false;
     let endpoint: string | undefined;
     try {
-      const values = persistCurrentCredentials();
+      const values = !verifyConnection && selectedProvider && !selectedProvider.isActive
+        ? { ...currentSubmitValues(), isActive: false }
+        : currentSubmitValues();
       const { discoveredModels, recommendedDefaults } = await discoverProviderModels(values);
       // Refresh the catalogue without replacing the user's explicit choices.
       const sameService = values.baseUrl.replace(/\/+$/, "") === selectedProvider?.baseUrl.replace(/\/+$/, "");
@@ -457,21 +506,25 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
       if (sameService) for (const key of Object.keys(defaults) as Array<keyof DefaultAssignments>) {
         if (defaults[key] && discoveredModels.some((model: GenericModelRecord) => model.modelId === defaults[key])) nextDefaults[key] = defaults[key];
       }
-      setModels(discoveredModels);
-      setDefaults(nextDefaults);
       setProbe({ status: "running", message: `已发现 ${discoveredModels.length} 个模型，正在保存配置…` });
       await persistProviderConfig(values, true, discoveredModels, nextDefaults);
       saved = true;
-      setProbe({ status: "running", message: "配置已保存，正在验证规划模型连接…" });
+      if (!verifyConnection) {
+        const imageCount = getModelsForType(discoveredModels, "image_gen").length;
+        setProbe({ status: "success", message: `模型列表已刷新并保存：共 ${discoveredModels.length} 个，图像生成 ${imageCount} 个。未发送文本、识图或生图请求。` });
+        toast.success("模型列表已刷新，未调用模型");
+        return;
+      }
+      setProbe({ status: "running", message: "配置已保存，正在自动检查文本与识图模型的兼容性…" });
       const response = await fetch("/api/providers/agent-compatibility", { method: "POST" });
       const payload = await response.json().catch(() => { throw new Error(`本地检测接口返回异常响应（HTTP ${response.status}），请刷新页面后重试。`); });
       endpoint = payload.data?.endpoint || payload.error?.details?.endpoint;
       if (!response.ok || !payload.success) throw new Error(payload.error?.message || "模型连接检测失败");
-      setProbe({ status: "success", message: `探测通过：已发现 ${discoveredModels.length} 个模型并保存配置；${payload.data.modelId} · ${payload.data.transport}`, endpoint });
+      setProbe({ status: "success", message: `探测通过：已发现 ${discoveredModels.length} 个模型并保存配置；已自动完成兼容检查。`, endpoint });
       window.dispatchEvent(new Event("mxpage:provider-updated"));
       toast.success("探测通过，配置已保存");
     } catch (error) {
-      const message = `${saved ? "配置已保存，但模型连接检测未通过：" : "探测或保存失败："}${error instanceof Error ? error.message : "请稍后重试"}`;
+      const message = `${saved ? "配置已保存，但模型连接检测未通过：" : verifyConnection ? "探测或保存失败：" : "模型列表刷新或保存失败："}${error instanceof Error ? error.message : "请稍后重试"}`;
       setProbe({ status: "error", message, endpoint });
       toast.error(message);
     } finally {
@@ -481,8 +534,9 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
 
   async function saveProviderAsNew() {
     setLoading("saveAsNew");
+    await saveQueue.current;
     try {
-      const values = persistCurrentCredentials();
+      const values = currentSubmitValues();
       await persistProviderConfig(values, false);
       toast.success("已另存为新服务，API Key 仅保存在本地浏览器");
     } catch (error) {
@@ -492,7 +546,9 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
     }
   }
   function handleAutoFillDefaults() {
-    setDefaults(buildRecommendedDefaults(models));
+    const next = buildRecommendedDefaults(models);
+    setDefaults(next);
+    saveSettings(next);
     toast.success("已按 GPT 优先和模型能力自动填充默认模型");
   }
 
@@ -579,6 +635,11 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
             )}
           </div>
 
+          <div className="space-y-2 text-sm text-muted-foreground">
+            <p>优先使用官方接口，自动适配兼容服务。切换模型后，首次使用时自动检查连接。</p>
+            <p role="status">{saveStatus[selectedProvider?.id || ""] || "模型选择自动保存；已有任务沿用原设置。"}</p>
+            {selectedProvider && <ImageCapabilitySummary models={selectedProvider.models.filter(model => [defaults.heroImageModelId, defaults.detailImageModelId, defaults.imageEditModelId].includes(model.modelId)).map(model => imageCapabilities(selectedProvider.baseUrl, model))}/>}
+          </div>
           <form autoComplete="off" className="grid gap-4 md:grid-cols-2" onSubmit={(event) => event.preventDefault()}>
             <div className="space-y-2 md:col-span-2">
               <Label htmlFor="provider-name">服务名称</Label>
@@ -593,7 +654,7 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
             <div className="space-y-2 md:col-span-2">
               <Label htmlFor="provider-api-key">API Key</Label>
               <Input id="provider-api-key" disabled={loading !== null} type="password" autoComplete="new-password" value={form.apiKey} onChange={(event) => updateForm({ apiKey: event.target.value })} placeholder="请输入当前浏览器使用的 API Key" />
-              <p className="text-xs text-muted-foreground">API Key 会写入浏览器 localStorage，不会保存到服务器数据库。不同设备需要分别配置。</p>
+              <p className="text-xs text-muted-foreground">API Key 仅在配置保存成功后写入当前浏览器，不会保存到服务器数据库。更换服务地址后需重新填写该服务的密钥。</p>
             </div>
           </form>
 
@@ -602,13 +663,20 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
               <div className="space-y-1">
                 <p className="text-sm font-medium">一键配置模型服务</p>
                 <p className="text-xs leading-6 text-muted-foreground">
-                  一次完成模型发现、能力识别、配置保存和规划模型连接验证。连接验证仅发送一次轻量结构化请求，不生成图片。
+                  一次完成模型发现、配置保存和自动兼容检查。连接检查使用少量文本/识图 token，不生成图片。
                 </p>
               </div>
-              <Button type="button" onClick={handleOneClickConfigure} disabled={loading !== null || !form.apiKey.trim()} className="h-11 shrink-0 gap-2 px-5">
+              <Button type="button" onClick={() => handleOneClickConfigure()} disabled={loading !== null || !form.apiKey.trim()} className="h-11 shrink-0 gap-2 px-5">
                 {loading === "configure" ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlugZap className="h-4 w-4" />}
                 {loading === "configure" ? "正在探测…" : "探测并保存"}
               </Button>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <Button type="button" variant="outline" onClick={() => handleOneClickConfigure(false)} disabled={loading !== null || !form.apiKey.trim()}>
+                {loading === "refreshModels" && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {loading === "refreshModels" ? "正在读取列表…" : "仅刷新模型列表"}
+              </Button>
+              <p className="text-xs leading-6 text-muted-foreground">只读取并保存当前密钥返回的目录，不调用模型。服务商价格页的模型不一定出现在当前密钥的目录中；若缺少模型，请核对密钥权限、分组及服务商目录。</p>
             </div>
             {probe && <div role="status" aria-live="polite" className={cn("space-y-1 rounded-xl border p-3 text-sm", probe.status === "error" ? "border-destructive/30 text-destructive" : probe.status === "success" ? "border-emerald-500/30 text-emerald-700 dark:text-emerald-300" : "text-muted-foreground")}>
               <p>{probe.message}</p>
@@ -644,7 +712,7 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
                         <Icon aria-hidden="true" className="h-4 w-4 shrink-0" />
                         {field.label}
                       </Label>
-                      <Select id={`default-model-${field.key}`} aria-label={field.label} value={selectedValue} disabled={loading !== null || options.length === 0} onValueChange={(value) => { setProbe(null); setDefaults((current) => setTypeDefaultValue(current, field.key, value)); }}>
+                      <Select id={`default-model-${field.key}`} aria-label={field.label} value={selectedValue} disabled={loading !== null || options.length === 0} onValueChange={(value) => { changeDefault(field.key, value); }}>
                         <option value="">{options.length === 0 ? "暂无此类型模型" : "未选择"}</option>
                         {options.map((model) => (
                           <option key={`${field.key}-${model.modelId}`} value={model.modelId}>{model.label}</option>

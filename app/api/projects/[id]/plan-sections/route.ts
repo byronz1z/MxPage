@@ -1,5 +1,5 @@
 ﻿import { NextRequest } from "next/server";
-import { HERO_MAX, DETAIL_MAX } from "@/lib/utils/image-counts";
+import { HERO_MAX, DETAIL_MAX, hasOutputImages, OUTPUT_COUNT_ERROR } from "@/lib/utils/image-counts";
 import { z } from "zod";
 
 import { planSections } from "@/lib/services/planner-service";
@@ -12,11 +12,12 @@ const planRequestSchema = z.object({
   autoDecideCounts: z.boolean().optional(),
   previewConfig: z
     .object({
-      heroImageCount: z.number().int().min(1).max(HERO_MAX),
-      detailSectionCount: z.number().int().min(1).max(DETAIL_MAX),
+      heroImageCount: z.number().int().min(0).max(HERO_MAX),
+      detailSectionCount: z.number().int().min(0).max(DETAIL_MAX),
       imageAspectRatio: z.enum(["3:4", "9:16"]),
       contentLanguage: z.enum(contentLanguageOptions),
     })
+    .refine(value => hasOutputImages(value.heroImageCount, value.detailSectionCount), { message: OUTPUT_COUNT_ERROR, path: ["heroImageCount"] })
     .optional(),
 });
 

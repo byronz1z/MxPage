@@ -1,3 +1,7 @@
+import { textSettings, normalizeOpenAiBaseUrl, type ResolvedTextSettings } from "@/lib/ai/text-protocol";
+import { prepareTextCompatibility } from "./provider-compatibility";
+import { resolveImageProtocol, evoLinkImageContract, type ImageProtocol, type ImageModelSettings } from "@/lib/ai/image-protocol";
+import { prepareImageCompatibility, rememberImageCompatibility } from "./image-compatibility";
 import { prisma } from "@/lib/db/prisma";
 import { OpenAICompatibleAdapter } from "@/lib/ai/adapters/openai-compatible";
 import { normalizeDetectedModels } from "@/lib/ai/capability-detector";
@@ -42,6 +46,11 @@ type ProviderAdapterContext = {
     name: string;
     baseUrl: string;
     apiKeyEncrypted: string;
+    textProtocol: string;
+    structuredOutputMode: string;
+    textModelSettings?: Record<string, ResolvedTextSettings>;
+    imageProtocol?: ImageProtocol;
+    imageModelSettings?: Record<string, ImageModelSettings>;
     isActive: boolean;
     createdAt: Date;
     updatedAt: Date;
@@ -67,47 +76,6 @@ type ProviderModelSnapshot = {
   };
 };
 
-type DiscoveredProviderModel = {
-  id: string;
-  label?: string;
-  type?: string | null;
-  category?: string | null;
-  modalities?: string[];
-};
-
-const OPENAI_TEXT_MODEL_PRESETS: DiscoveredProviderModel[] = [
-  { id: "gpt-6-luna", label: "gpt-6-luna", type: "text", category: "chat", modalities: ["text", "vision"] },
-  { id: "gpt-5-mini", label: "gpt-5-mini", type: "text", category: "chat" },
-  { id: "gpt-5-nano", label: "gpt-5-nano", type: "text", category: "chat" },
-  { id: "gpt-4.1-mini", label: "gpt-4.1-mini", type: "text", category: "chat" },
-  { id: "gpt-4.1-nano", label: "gpt-4.1-nano", type: "text", category: "chat" },
-  { id: "gpt-4o-mini", label: "gpt-4o-mini", type: "text", category: "chat" },
-  { id: "gpt-4o", label: "gpt-4o", type: "text", category: "chat", modalities: ["text", "vision"] },
-  { id: "gpt-4.1", label: "gpt-4.1", type: "text", category: "chat", modalities: ["text", "vision"] },
-];
-
-const OPENAI_IMAGE_MODEL_PRESETS: DiscoveredProviderModel[] = [
-  { id: "gpt-image-2.5-sunburst", label: "gpt-image-2.5-sunburst", type: "image", category: "image" },
-  { id: "gpt-image-2.5-flare", label: "gpt-image-2.5-flare", type: "image", category: "image" },
-  { id: "gpt-image-2-2026-04-21", label: "gpt-image-2-2026-04-21", type: "image", category: "image" },
-  { id: "gpt-image-2", label: "gpt-image-2", type: "image", category: "image" },
-  { id: "gpt-image-1.5", label: "gpt-image-1.5", type: "image", category: "image" },
-  { id: "gpt-image-1.5-2025-12-16", label: "gpt-image-1.5-2025-12-16", type: "image", category: "image" },
-  { id: "gpt-image-1-mini", label: "gpt-image-1-mini", type: "image", category: "image" },
-  { id: "gpt-image-1", label: "gpt-image-1", type: "image", category: "image" },
-  { id: "dall-e-3", label: "dall-e-3", type: "image", category: "image" },
-  { id: "dall-e-2", label: "dall-e-2", type: "image", category: "image" },
-];
-
-function maskApiKey(apiKey: string) {
-  const trimmed = apiKey.trim();
-  if (!trimmed) return "";
-  if (trimmed.length <= 10) {
-    return `${trimmed.slice(0, 3)}***${trimmed.slice(-2)}`;
-  }
-  return `${trimmed.slice(0, 6)}***${trimmed.slice(-4)}`;
-}
-
 function readEndpointSupport(capabilities: Record<string, unknown> | null | undefined) {
   return {
     imageGeneration: (capabilities?.__imageGenerationStatus as string | undefined) ?? "unknown",
@@ -121,66 +89,6 @@ function hydrateProviderModels<T extends { capabilities: any }>(models: T[]) {
     ...model,
     endpointSupport: readEndpointSupport(model.capabilities as Record<string, unknown> | undefined),
   }));
-}
-
-function shouldIncludeOpenAiImagePresets(baseUrl: string, models: Array<{ modelId?: string; id?: string }>) {
-  const text = `${baseUrl} ${models.map((model) => model.modelId ?? model.id ?? "").join(" ")}`.toLowerCase();
-  return /openai|chatgpt|gpt-|(^|[^a-z])o[1345](?:[^a-z]|$)|dall[-_\s]?e/.test(text);
-}
-
-function mergeDiscoveredModels(baseUrl: string, models: DiscoveredProviderModel[]) {
-  if (!shouldIncludeOpenAiImagePresets(baseUrl, models)) {
-    return models;
-  }
-
-  const seen = new Set(models.map((model) => model.id.toLowerCase()));
-  const presets = [...OPENAI_TEXT_MODEL_PRESETS, ...OPENAI_IMAGE_MODEL_PRESETS];
-  const missingPresets = presets.filter((model) => !seen.has(model.id.toLowerCase()));
-  return [...models, ...missingPresets];
-}
-
-function mergeHydratedProviderModels<T extends RuntimeProviderModel>(
-  providerId: string,
-  baseUrl: string,
-  models: T[],
-) {
-  if (!shouldIncludeOpenAiImagePresets(baseUrl, models)) {
-    return models;
-  }
-
-  const seen = new Set(models.map((model) => model.modelId.toLowerCase()));
-  const missingPresets = [...OPENAI_TEXT_MODEL_PRESETS, ...OPENAI_IMAGE_MODEL_PRESETS].filter((model) => !seen.has(model.id.toLowerCase()));
-  if (missingPresets.length === 0) {
-    return models;
-  }
-
-  const now = new Date();
-  const supplemental = enrichModelEndpointSupport(normalizeDetectedModels(missingPresets)).map((model) => ({
-    id: `${providerId}:preset:${model.modelId}`,
-    providerConfigId: providerId,
-    modelId: model.modelId,
-    label: model.label,
-    capabilities: model.capabilities as Record<string, unknown>,
-    roles: model.roles as Record<string, unknown>,
-    quality: model.quality ?? null,
-    latency: model.latency ?? null,
-    cost: model.cost ?? null,
-    isAvailable: model.isAvailable,
-    isDefaultAnalysis: false,
-    isDefaultPlanning: false,
-    isDefaultHeroImage: false,
-    isDefaultDetailImage: false,
-    isDefaultImageEdit: false,
-    createdAt: now,
-    updatedAt: now,
-    endpointSupport: model.endpointSupport ?? {
-      imageGeneration: "unknown",
-      imageEdit: "unknown",
-      note: PASSIVE_IMAGE_CAPABILITY_NOTE,
-    },
-  })) as T[];
-
-  return [...models, ...supplemental];
 }
 
 const PASSIVE_IMAGE_CAPABILITY_NOTE =
@@ -224,16 +132,18 @@ async function replaceProviderModels(
     imageEditModelId?: string | null;
   },
 ) {
-  await prisma.modelProfile.deleteMany({
+  await prisma.$transaction(async tx => {
+  const existing = await tx.modelProfile.findMany({ where: { providerConfigId } });
+  await tx.modelProfile.deleteMany({
     where: { providerConfigId },
   });
 
-  await prisma.modelProfile.createMany({
+  await tx.modelProfile.createMany({
     data: models.map((model) => ({
       providerConfigId,
       modelId: model.modelId,
       label: model.label,
-      capabilities: model.capabilities,
+      capabilities: { ...model.capabilities, ...Object.fromEntries(Object.entries((existing.find(m => m.modelId === model.modelId)?.capabilities || {}) as Record<string, any>).filter(([key]) => ["__textCompatibility", "__imageCompatibility", "__agentTools", "__agentNativeSearch"].includes(key))) },
       roles: model.roles,
       quality: model.quality,
       latency: model.latency,
@@ -246,6 +156,7 @@ async function replaceProviderModels(
       isDefaultImageEdit: defaults.imageEditModelId === model.modelId,
     })),
   });
+  });
 }
 
 export async function testProviderConnection(input: ProviderConnectionInput) {
@@ -257,11 +168,12 @@ export async function resolveProviderConnectionInput(
   input: Omit<ProviderConnectionInput, "apiKey"> & { apiKey?: string | null; id?: string | null },
 ): Promise<ProviderConnectionInput> {
   const runtimeCredentials = getRequestProviderCredentials();
-  const apiKey = input.apiKey?.trim() || runtimeCredentials.apiKey?.trim() || "";
   const baseUrl = resolveEffectiveBaseUrl(input.baseUrl || runtimeCredentials.baseUrl);
+  const headerKeyMatches = !runtimeCredentials.baseUrl || normalizeOpenAiBaseUrl(resolveEffectiveBaseUrl(runtimeCredentials.baseUrl)) === normalizeOpenAiBaseUrl(baseUrl);
+  const apiKey = input.apiKey?.trim() || (headerKeyMatches ? runtimeCredentials.apiKey?.trim() : "") || "";
 
   if (!apiKey) {
-    throw new Error("API Key is not configured in this browser. Configure it in Provider settings first.");
+    throw Object.assign(new Error("API Key is not configured for this service in this browser."), { code: "PROVIDER_CREDENTIALS_MISSING" });
   }
 
   if (!baseUrl) {
@@ -279,7 +191,13 @@ export async function discoverProviderModels(input: ProviderConnectionInput) {
   const baseUrl = resolveEffectiveBaseUrl(input.baseUrl);
   const adapter = new OpenAICompatibleAdapter(baseUrl, input.apiKey);
   const models = await adapter.listModels();
-  const normalized = enrichModelEndpointSupport(normalizeDetectedModels(mergeDiscoveredModels(baseUrl, models)));
+  const normalized = enrichModelEndpointSupport(normalizeDetectedModels(models)).map(model => {
+    const contract = resolveImageProtocol(baseUrl) === "evolink_tasks" ? evoLinkImageContract(model.modelId) : undefined;
+    if (!contract) return model;
+    const generic = !model.modelId.startsWith("mj-") && !model.modelId.endsWith("-layerize") && contract.required.every(key => ["model", "prompt", "image_urls"].includes(key));
+    const capabilities = { ...model.capabilities, text: false, vision: false, structured_output: false, image_gen: generic && !contract.required.includes("image_urls"), image_edit: generic && Boolean(contract.properties.image_urls) };
+    return { ...model, capabilities, roles: { ...model.roles, analysis: false, planning: false, hero_image: capabilities.image_gen, detail_image: capabilities.image_gen, image_edit: capabilities.image_edit } };
+  });
   return {
     models: normalized,
     recommendations: recommendDefaultModels(normalized),
@@ -320,6 +238,7 @@ export async function saveProviderConfig(
     ? await prisma.providerConfig.update({
         where: { id: input.id },
         data: {
+          ...textSettings(input),
           name: input.name,
           baseUrl,
           apiKeyEncrypted: encryptSecret(""),
@@ -328,6 +247,7 @@ export async function saveProviderConfig(
       })
     : await prisma.providerConfig.create({
         data: {
+          ...textSettings(input),
           name: input.name,
           baseUrl,
           apiKeyEncrypted: encryptSecret(""),
@@ -361,11 +281,7 @@ export async function getAllProviderConfigs() {
       baseUrl: effectiveBaseUrl,
       apiKey: "",
       maskedApiKey: "",
-      models: mergeHydratedProviderModels(
-        provider.id,
-        effectiveBaseUrl,
-        hydrateProviderModels(provider.models) as RuntimeProviderModel[],
-      ),
+      models: hydrateProviderModels(provider.models) as RuntimeProviderModel[],
     };
   });
 }
@@ -388,11 +304,7 @@ export async function getActiveProviderConfig() {
     baseUrl: effectiveBaseUrl,
     apiKey: "",
     maskedApiKey: "",
-    models: mergeHydratedProviderModels(
-      provider.id,
-      effectiveBaseUrl,
-      hydrateProviderModels(provider.models) as RuntimeProviderModel[],
-    ),
+    models: hydrateProviderModels(provider.models) as RuntimeProviderModel[],
   };
 }
 
@@ -455,8 +367,14 @@ export async function deleteProviderConfig(providerId: string) {
   return getAllProviderConfigs();
 }
 
-export async function getProviderAdapter(providerId?: string): Promise<ProviderAdapterContext> {
-  const provider =
+export type ProviderSnapshot = Pick<ProviderAdapterContext["provider"], "id" | "baseUrl" | "models" | "textProtocol" | "structuredOutputMode" | "textModelSettings" | "imageProtocol" | "imageModelSettings">;
+export function snapshotProvider(provider: ProviderAdapterContext["provider"]): ProviderSnapshot {
+  return { id: provider.id, baseUrl: provider.baseUrl, models: provider.models, ...textSettings(provider), imageProtocol: provider.imageProtocol ?? resolveImageProtocol(provider.baseUrl), ...(provider.imageModelSettings ? { imageModelSettings: provider.imageModelSettings } : {}) };
+}
+export async function getProviderAdapter(providerId?: string, snapshot?: ProviderSnapshot, options: { forceCompatibilityCheck?: boolean; textModelIds?: string[]; legacyTextProtocol?: boolean } = {}): Promise<ProviderAdapterContext> {
+  snapshot ??= getRequestProviderCredentials().providerSnapshot;
+  providerId = snapshot?.id || providerId;
+  const saved =
     (providerId
       ? await prisma.providerConfig.findUnique({
           where: { id: providerId },
@@ -467,25 +385,36 @@ export async function getProviderAdapter(providerId?: string): Promise<ProviderA
           include: { models: true },
         })) ?? null;
 
-  if (!provider) {
+  if (!saved) {
     throw new Error("No active provider config found.");
   }
 
   const runtimeCredentials = getRequestProviderCredentials();
+  const provider = snapshot ? { ...saved, ...snapshot } : saved;
   const apiKey = runtimeCredentials.apiKey?.trim() ?? "";
   if (!apiKey) {
-    throw new Error("API Key is not configured in this browser. Configure it in Provider settings first.");
+    throw Object.assign(new Error("API Key is not configured in this browser. Configure it in Provider settings first."), { code: "PROVIDER_CREDENTIALS_MISSING" });
   }
-  const baseUrl = resolveEffectiveBaseUrl(runtimeCredentials.baseUrl ?? provider.baseUrl);
-  const runtimeModels = hydrateProviderModels(provider.models) as unknown as RuntimeProviderModel[];
+  const baseUrl = snapshot ? snapshot.baseUrl : resolveEffectiveBaseUrl(runtimeCredentials.baseUrl ?? provider.baseUrl);
+  if (snapshot && runtimeCredentials.baseUrl && resolveEffectiveBaseUrl(runtimeCredentials.baseUrl) !== snapshot.baseUrl) {
+    throw new Error("此任务属于原模型服务，请切回原服务后继续，或创建新任务。");
+  }
+  const runtimeModels = hydrateProviderModels<{ capabilities: any }>(provider.models) as unknown as RuntimeProviderModel[];
+  const runtimeProvider = { ...provider, baseUrl, models: runtimeModels, textModelSettings: snapshot?.textModelSettings, imageModelSettings: snapshot ? snapshot.imageModelSettings : await prepareImageCompatibility({ ...provider, baseUrl }, apiKey) };
+  if (!snapshot && (options.legacyTextProtocol || runtimeCredentials.legacyTextProtocol)) {
+    runtimeProvider.textProtocol = "chat_completions";
+    runtimeProvider.structuredOutputMode = "json_schema";
+  } else if (!snapshot && (provider.textProtocol === "auto" || options.forceCompatibilityCheck)) {
+    runtimeProvider.textModelSettings = await prepareTextCompatibility(runtimeProvider, apiKey, options);
+    runtimeProvider.textProtocol = "auto";
+    if (options.forceCompatibilityCheck && provider.textProtocol !== "auto" && Object.keys(runtimeProvider.textModelSettings).length) {
+      await prisma.providerConfig.update({ where: { id: provider.id }, data: { textProtocol: "auto" } });
+    }
+  }
 
   return {
-    provider: {
-      ...provider,
-      baseUrl,
-      models: runtimeModels,
-    },
+    provider: runtimeProvider,
     apiKey,
-    adapter: new OpenAICompatibleAdapter(baseUrl, apiKey),
+    adapter: new OpenAICompatibleAdapter(baseUrl, apiKey, { ...textSettings(runtimeProvider), imageProtocol: snapshot?.imageProtocol ?? resolveImageProtocol(baseUrl), imageModelSettings: runtimeProvider.imageModelSettings, legacyImageRouting: Boolean(snapshot && !snapshot.imageModelSettings), onImageSuccess: (model, settings) => rememberImageCompatibility(runtimeProvider, apiKey, model, settings).catch(() => undefined) }),
   };
 }

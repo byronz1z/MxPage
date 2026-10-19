@@ -7,6 +7,7 @@ export type TranslationImage = {
   attempts: number;
   assetId?: string;
   error?: string;
+  upstreamTask?: import("@/lib/ai/provider-client").UpstreamImageTask;
 };
 export type TranslationProgress = { images: TranslationImage[]; message: string; taskTiming?: import("@/lib/tasks/timing").TaskTiming };
 export function translationSummary(images: TranslationImage[]) {

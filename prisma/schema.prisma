@@ -106,6 +106,8 @@ model ProviderConfig {
   id              String         @id @default(cuid())
   name            String
   baseUrl         String
+  textProtocol    String         @default("chat_completions")
+  structuredOutputMode String    @default("json_schema")
   apiKeyEncrypted String
   isActive        Boolean        @default(false)
   createdAt       DateTime       @default(now())
@@ -227,4 +229,117 @@ model GenerationTask {
 
   @@index([projectId, createdAt])
   @@index([sectionId, createdAt])
+}
+
+model AgentSession {
+  id String @id @default(cuid())
+  title String @default("新会话")
+  modelId String?
+  archived Boolean @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  messages AgentMessage[]
+  runs AgentRun[]
+  artifacts AgentArtifact[]
+}
+model AgentMessage {
+  id String @id @default(cuid())
+  sessionId String
+  session AgentSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role String
+  content String
+  attachments Json @default("[]")
+  createdAt DateTime @default(now())
+}
+model AgentRun {
+  id String @id @default(cuid())
+  sessionId String
+  session AgentSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  idempotencyKey String
+  status String @default("PENDING")
+  mode String @default("chat")
+  input Json
+  snapshot Json
+  plan Json?
+  approvedHash String?
+  modelCalls Int @default(0)
+  toolCalls Int @default(0)
+  modelLimit Int @default(30)
+  toolLimit Int @default(100)
+  leaseToken String?
+  leaseUntil DateTime?
+  error String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  events AgentEvent[]
+  calls AgentToolCall[]
+  artifacts AgentArtifact[]
+  checkpoints AgentCheckpoint[]
+  writes AgentCheckpointWrite[]
+  @@unique([sessionId, idempotencyKey])
+  @@index([sessionId, createdAt])
+}
+model AgentEvent {
+  seq Int @id @default(autoincrement())
+  runId String
+  run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  type String
+  data Json
+  createdAt DateTime @default(now())
+  @@index([runId, seq])
+}
+model AgentToolCall {
+  id String @id @default(cuid())
+  runId String
+  run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  callId String
+  name String
+  argsHash String
+  status String @default("RUNNING")
+  output Json?
+  error String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([runId, callId])
+}
+model AgentArtifact {
+  id String @id @default(cuid())
+  sessionId String
+  session AgentSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  runId String?
+  run AgentRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+  name String
+  mimeType String
+  filePath String?
+  url String?
+  kind String
+  bytes Int @default(0)
+  createdAt DateTime @default(now())
+}
+model AgentCheckpoint {
+  runId String
+  run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  namespace String
+  checkpointId String
+  parentId String?
+  type String
+  checkpoint Bytes
+  metadata Bytes
+  @@id([runId, namespace, checkpointId])
+}
+model AgentCheckpointWrite {
+  runId String
+  run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  namespace String
+  checkpointId String
+  taskId String
+  idx Int
+  channel String
+  type String
+  value Bytes
+  @@id([runId, namespace, checkpointId, taskId, idx])
+}
+model AgentSetting {
+  id String @id @default("default")
+  value Json
 }

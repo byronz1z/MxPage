@@ -180,10 +180,10 @@ const shellItems = [
 function getPreviewConfig(project: any): PreviewConfig {
   const config = project?.modelSnapshot?.previewConfig ?? {};
   return {
-    heroImageCount: Math.min(HERO_MAX, Math.max(1, Number(config.heroImageCount ?? defaultPreviewConfig.heroImageCount))),
+    heroImageCount: Math.min(HERO_MAX, Math.max(0, Number(config.heroImageCount ?? defaultPreviewConfig.heroImageCount))),
     detailSectionCount: Math.min(
       DETAIL_MAX,
-      Math.max(1, Number(config.detailSectionCount ?? defaultPreviewConfig.detailSectionCount)),
+      Math.max(0, Number(config.detailSectionCount ?? defaultPreviewConfig.detailSectionCount)),
     ),
     imageAspectRatio: config.imageAspectRatio === "3:4" ? "3:4" : defaultPreviewConfig.imageAspectRatio,
     contentLanguage: config.contentLanguage ?? defaultPreviewConfig.contentLanguage,

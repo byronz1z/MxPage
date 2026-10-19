@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import sharp from "sharp";
+import { NextRequest } from "next/server";
 import { assertStrictResponseSchema } from "./helpers/strict-response-schema";
 
 let directory: string, png: Buffer;
@@ -40,7 +41,7 @@ before(async () => {
   runtime = await import("../lib/services/provider-runtime");
   storage = await import("../lib/storage/asset-manager");
   png = await sharp({ create: { width: 16, height: 16, channels: 3, background: "#aa7755" } }).png().toBuffer();
-  await db.providerConfig.create({ data: { name: "Isolated brief", baseUrl: credentials.baseUrl, apiKeyEncrypted: "unused", isActive: true, models: { create: { modelId: "gpt-6-luna", label: "Luna", capabilities: { text: true }, roles: {}, isDefaultPlanning: true } } } });
+  await db.providerConfig.create({ data: { name: "Isolated brief", baseUrl: credentials.baseUrl, apiKeyEncrypted: "unused", isActive: true, models: { create: { modelId: "gpt-6-luna", label: "Luna", capabilities: { text: true, vision: true }, roles: {}, isDefaultPlanning: true, isDefaultAnalysis: true } } } });
   globalThis.fetch = async (url, init) => {
     assert.equal(String(url), `${credentials.baseUrl}/chat/completions`);
     const body = JSON.parse(String(init?.body)); calls.push(body);
@@ -104,4 +105,26 @@ test("missing asset fails before any model request", async () => {
   const id = await project();
   await db.productAsset.updateMany({ where: { projectId: id }, data: { filePath: "missing-test-file.png" } });
   await assert.rejects(prepare(id, { initialOnly: true })); assert.equal(calls.length, 0);
+});
+
+test("brief route reports missing browser credentials before dispatch and leaves the project retryable", async () => {
+  const { POST } = await import("../app/api/projects/[id]/brief/route");
+  const id = await project();
+  const response = await POST(new NextRequest(`http://localhost/api/projects/${id}/brief`, {
+    method: "POST", body: JSON.stringify({ initialOnly: true }),
+  }), { params: { id } });
+  assert.equal(response.status, 400);
+  const payload = await response.json();
+  assert.equal(payload.error.code, "PROVIDER_CREDENTIALS_MISSING");
+  assert.match(payload.error.message, /当前浏览器.*API Key/);
+  assert.deepEqual(payload.error.details, { source: "local" });
+  assert.equal(calls.length, 0);
+  assert.equal((await db.project.findUniqueOrThrow({ where: { id } })).modelSnapshot, null);
+
+  const restored = await POST(new NextRequest(`http://localhost/api/projects/${id}/brief`, {
+    method: "POST", body: JSON.stringify({ initialOnly: true }),
+    headers: { "x-mxpage-api-key": credentials.apiKey, "x-mxpage-base-url": credentials.baseUrl },
+  }), { params: { id } });
+  assert.equal(restored.status, 200);
+  assert.equal(calls.length, 1, "supplying credentials sends the first request, with no implicit retry");
 });

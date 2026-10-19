@@ -1,4 +1,5 @@
-import { HERO_MAX, DETAIL_MAX } from "@/lib/utils/image-counts";
+import { selectModel } from "@/lib/ai/model-selection";
+import { HERO_MAX, DETAIL_MAX, hasOutputImages, OUTPUT_COUNT_ERROR } from "@/lib/utils/image-counts";
 import { Prisma } from "@prisma/client";
 import { nanoid } from "nanoid";
 import { z } from "zod";
@@ -52,17 +53,17 @@ type NormalizedSection = {
 };
 
 const previewConfigSchema = z.object({
-  heroImageCount: z.number().int().min(1).max(HERO_MAX),
-  detailSectionCount: z.number().int().min(1).max(DETAIL_MAX),
+  heroImageCount: z.number().int().min(0).max(HERO_MAX),
+  detailSectionCount: z.number().int().min(0).max(DETAIL_MAX),
   imageAspectRatio: z.enum(["3:4", "9:16"]).default("9:16"),
   contentLanguage: z.enum(contentLanguageOptions).default("zh-CN"),
-});
+}).refine(value => hasOutputImages(value.heroImageCount, value.detailSectionCount), { message: OUTPUT_COUNT_ERROR, path: ["heroImageCount"] });
 
 const previewDecisionSchema = z.object({
-  heroImageCount: z.number().int().min(1).max(HERO_MAX),
-  detailSectionCount: z.number().int().min(1).max(DETAIL_MAX),
+  heroImageCount: z.number().int().min(0).max(HERO_MAX),
+  detailSectionCount: z.number().int().min(0).max(DETAIL_MAX),
   reason: z.string().default(""),
-});
+}).refine(value => hasOutputImages(value.heroImageCount, value.detailSectionCount), { message: OUTPUT_COUNT_ERROR, path: ["heroImageCount"] });
 
 const heroFallbackSections: Array<{
   id: string;
@@ -382,19 +383,7 @@ function isVisionTextModel(model: PlanningModelRecord) {
 }
 
 function pickMultimodalPlanningModel(models: PlanningModelRecord[], preferredModelId?: string | null) {
-  if (preferredModelId) return preferredModelId;
-
-  const visionTextModels = models.filter(isVisionTextModel);
-  return (
-    visionTextModels.find((item) => item.isDefaultPlanning)?.modelId ??
-    visionTextModels.find((item) => item.isDefaultAnalysis)?.modelId ??
-    visionTextModels.find((item) => /gpt-4o|gpt-4\.1|gpt-5|gemini|qwen.*vl|kimi|moonshot/i.test(item.modelId))?.modelId ??
-    visionTextModels[0]?.modelId ??
-    models.find((item) => item.isDefaultPlanning)?.modelId ??
-    models.find((item) => item.isDefaultAnalysis)?.modelId ??
-    models.find((item) => (item.capabilities as Record<string, boolean>).structured_output)?.modelId ??
-    null
-  );
+  return selectModel(models, "planning", preferredModelId, true);
 }
 
 async function normalizeProjectSections(projectId: string) {
@@ -484,20 +473,15 @@ async function assertSectionMutationAllowed(projectId: string, options: { adding
   }
 
   if (options.deletingSectionId) {
+    if (heroCount + detailCount <= 1) throw new Error(OUTPUT_COUNT_ERROR);
     const target = project.sections.find((section) => section.id === options.deletingSectionId);
     if (!target) {
       throw new Error("Section not found.");
     }
 
     if (target.type === "HERO") {
-      if (heroCount <= 3) {
-        throw new Error("头图至少保留 1 张，不能继续删除。");
-      }
       heroCount -= 1;
     } else {
-      if (detailCount <= 4) {
-        throw new Error("详情页至少保留 1 张，不能继续删除。");
-      }
       detailCount -= 1;
     }
   }
@@ -512,18 +496,12 @@ async function assertSectionMutationAllowed(projectId: string, options: { adding
     const nextType = normalizeSectionType(options.nextType);
     if (currentType !== nextType) {
       if (currentType === "HERO" && nextType !== "HERO") {
-        if (heroCount <= 3) {
-          throw new Error("头图至少保留 1 张，不能把当前头图改成详情页。");
-        }
         if (detailCount >= DETAIL_MAX) {
           throw new Error("详情页最多保留 20 张，请先删除多余详情页后再转换。");
         }
       }
 
       if (currentType !== "HERO" && nextType === "HERO") {
-        if (detailCount <= 4) {
-          throw new Error("详情页至少保留 1 张，不能把当前详情页改成头图。");
-        }
         if (heroCount >= HERO_MAX) {
           throw new Error("头图最多保留 10 张，请先删除多余头图后再转换。");
         }
@@ -549,8 +527,9 @@ function buildPreviewDecisionPrompt(analysis: Record<string, unknown>, contentLa
   return [
     "You are a senior e-commerce creative strategist deciding the right image count plan for a product detail page.",
     "Return strict JSON only.",
-    "heroImageCount must be an integer between 1 and 5.",
-    "detailSectionCount must be an integer between 1 and 10.",
+    `heroImageCount must be an integer between 0 and ${HERO_MAX}. Zero means detail images only.`,
+    `detailSectionCount must be an integer between 0 and ${DETAIL_MAX}. Zero means hero images only.`,
+    "heroImageCount and detailSectionCount must not both be zero.",
     `The target content language for the final page is ${contentLanguage}.`,
     "Hero images should be enough to cover distinct first-screen communication angles such as hero visual, selling point emphasis, scenario mood, trust, or differentiation.",
     "Detail sections should be enough to fully explain selling points, craftsmanship, specs, trust, and use cases without becoming repetitive.",
@@ -744,7 +723,7 @@ async function decidePreviewConfigWithAi(
     throw new Error("请先完成商品分析，再进行页面规划。");
   }
 
-  const { provider, adapter } = await getProviderAdapter();
+  const { provider, adapter } = await getProviderAdapter(undefined, undefined, { textModelIds: preferredModelId ? [preferredModelId] : undefined });
   const model = pickMultimodalPlanningModel(provider.models, preferredModelId);
 
   if (!model) {
@@ -1025,7 +1004,7 @@ export async function regenerateVisualStyleGuide(projectId: string, preferredMod
     throw new Error("Please finish product analysis before generating the visual style guide.");
   }
 
-  const { provider, adapter } = await getProviderAdapter();
+  const { provider, adapter } = await getProviderAdapter(undefined, undefined, { textModelIds: preferredModelId ? [preferredModelId] : undefined });
   const model = pickMultimodalPlanningModel(provider.models, preferredModelId);
 
   if (!model) {

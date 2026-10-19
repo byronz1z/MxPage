@@ -28,14 +28,24 @@ export function isConcreteSupplementalOption(option: string) {
   return Boolean(text) && !/按.{0,12}(?:现有|已有|已提供).{0,12}(?:继续|处理)|(?:仅|只)使用.{0,20}(?:信息|事实)|暂不(?:展示|确定|提供|标注)|暂(?:无|缺).{0,10}(?:信息|参数)|沿用现有|系统.{0,8}判断|自行填写|自定义|^其他$|^不确定/.test(text);
 }
 
+const quantitativeRules = [
+  { name: "尺寸", field: /尺寸|直径|高度|长宽|宽度|dimensions?|\bsize\b/i, units: "mm|cm|m|inches?|inch|in|毫米|厘米|公分|米|英寸|寸" },
+  { name: "重量", field: /净重|重量|weight/i, units: "kg|mg|g|oz|lb|千克|公斤|毫克|克|斤" },
+  { name: "容量", field: /容量|容积|capacity|volume/i, units: "mL|L|cc|毫升|升" },
+].map(rule => ({ ...rule, value: new RegExp(`\\d+(?:\\.\\d+)?\\s*(?:${rule.units})(?![a-z])`, "i") }));
+
+function sharedQuantitativeUnit(question: Pick<SupplementalQuestion, "text" | "fields">, option: string) {
+  const subject = [...question.fields, question.text].join(" ");
+  const rules = quantitativeRules.filter(rule => rule.field.test(subject));
+  // A table may declare one common unit in its heading. Never infer units from
+  // unrelated numbers, another option, or mixed dimension/weight/capacity groups.
+  if (rules.length !== 1 || !/\d/.test(option) || quantitativeRules.some(rule => rule.value.test(option))) return null;
+  return question.text.match(new RegExp(`(?:单位\\s*(?:均为|为|是|[:：])?\\s*[（(]?\\s*|\\bunits?\\s*(?:are|is|in|[:=])?\\s*\\(?\\s*)(${rules[0].units})(?![a-z])`, "i"))?.[1] || null;
+}
+
 function quantitativeOptionIssue(question: Pick<SupplementalQuestion, "text" | "fields" | "options">) {
   const subject = [...question.fields, question.text].join(" ");
-  const rules = [
-    { name: "尺寸", field: /尺寸|直径|高度|长宽|宽度|dimensions?|\bsize\b/i, value: /\d+(?:\.\d+)?\s*(?:mm|cm|m|inches?|inch|in|毫米|厘米|公分|米|英寸|寸)(?![a-z])/i },
-    { name: "重量", field: /净重|重量|weight/i, value: /\d+(?:\.\d+)?\s*(?:kg|mg|g|oz|lb|千克|公斤|毫克|克|斤)(?![a-z])/i },
-    { name: "容量", field: /容量|容积|capacity|volume/i, value: /\d+(?:\.\d+)?\s*(?:mL|L|cc|毫升|升)(?![a-z])/i },
-  ];
-  const missing = rules.filter(rule => rule.field.test(subject) && question.options.some(option => !rule.value.test(option)));
+  const missing = quantitativeRules.filter(rule => rule.field.test(subject) && question.options.some(option => !rule.value.test(option) && !sharedQuantitativeUnit(question, option)));
   return missing.length ? `「${question.text}」的每个候选都需要包含${missing.map(rule => rule.name).join("、")}的具体模拟数值与单位，不能只提供参数名称或用途。` : null;
 }
 
@@ -117,7 +127,9 @@ export function resolveSupplementalSubmission(questions: SupplementalQuestion[],
   if (ids.size !== questions.length || body.responses.length !== questions.length || questions.some(question => !ids.has(question.id))) throw new Error("请完整回答当前显示的所有卡片。");
   return questions.map(question => {
     const response = body.responses.find(item => item.questionId === question.id)!;
-    return { question: question.text, fields: question.fields, source: response.mode, basis: response.mode === "custom" ? "user_provided" as const : "model_estimate" as const, answer: response.mode === "custom" ? response.customText : question.options[response.optionIndex] };
+    const answer = response.mode === "custom" ? response.customText : question.options[response.optionIndex];
+    const unit = response.mode === "option" ? sharedQuantitativeUnit(question, answer) : null;
+    return { question: question.text, fields: question.fields, source: response.mode, basis: response.mode === "custom" ? "user_provided" as const : "model_estimate" as const, answer: unit ? `${answer}（单位：${unit}）` : answer };
   });
 }
 

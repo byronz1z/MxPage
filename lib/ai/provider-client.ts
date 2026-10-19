@@ -40,7 +40,14 @@ export interface TextRequest {
   signal?: AbortSignal;
 }
 
-export interface ImageGenerationRequest {
+export type UpstreamImageTask = { protocol: "evolink_tasks"; id: string; status: "pending" | "completed" | "failed" };
+export interface ImageTaskLifecycle {
+  upstreamTask?: UpstreamImageTask;
+  onUpstreamTask?: (task: UpstreamImageTask) => Promise<void>;
+  beforeSubmit?: () => Promise<void>;
+}
+
+export interface ImageGenerationRequest extends ImageTaskLifecycle {
   quality?: "auto" | "low" | "medium" | "high" | "xhigh" | "max";
   background?: "auto" | "opaque" | "transparent";
   outputFormat?: "png" | "jpeg" | "webp";
@@ -57,7 +64,7 @@ export interface ImageGenerationRequest {
   signal?: AbortSignal;
 }
 
-export interface ImageEditRequest {
+export interface ImageEditRequest extends ImageTaskLifecycle {
   quality?: "auto" | "low" | "medium" | "high" | "xhigh" | "max";
   model: string;
   prompt: string;

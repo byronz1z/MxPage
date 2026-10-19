@@ -17,7 +17,7 @@ test("subfolders keep multiview products separate, including deeper view folders
 });
 test("unsupported files are ignored; excessive images, products and bytes are rejected, never silently truncated", () => {
   assert.equal(groupProductFiles([file("root/readme.md")]).groups.length, 0);
-  assert.throws(() => groupProductFiles([file("root/big.png", 10 * 1024 * 1024 + 1)]), /10MB/);
+  assert.throws(() => groupProductFiles([file("root/big.png", 20 * 1024 * 1024 + 1)]), /20MB/);
   assert.throws(() => groupProductFiles(Array.from({ length: 9 }, (_, i) => file(`root/A/${i}.png`))), /最多 8/);
   assert.throws(() => groupProductFiles(Array.from({ length: 51 }, (_, i) => file(`root/${i}.png`))), /50/);
 });

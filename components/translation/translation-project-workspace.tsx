@@ -10,6 +10,7 @@ import { ApiRequestError, fetchApiProgress, requestErrorMessage } from "@/lib/ut
 import { ImageGenerationLoading } from "@/components/shared/image-generation-loading";
 import { TaskTimer } from "@/components/tasks/task-timer";
 import { projectTaskDuration } from "@/lib/tasks/timing";
+import { translationNeedsPolling } from "@/lib/translation/polling";
 
 type Project = NonNullable<Awaited<ReturnType<typeof getProjectDetail>>>;
 export function TranslationProjectWorkspace({ initialProject }: { initialProject: Project }) {
@@ -25,25 +26,36 @@ export function TranslationProjectWorkspace({ initialProject }: { initialProject
   const language = contentLanguageLabels[normalizeContentLanguage(input?.language || snapshot?.previewConfig?.contentLanguage)];
   const completed = project.sections.filter(section => section.imageUrl).length;
   const complete = project.sections.length > 0 && completed === project.sections.length;
-  const batchHref = input?.batchId ? `/translate?batch=${encodeURIComponent(input.batchId)}` : "/translate";
+  const batchHref = input?.batchId ? `/translate/${encodeURIComponent(input.batchId)}` : "/translate";
   useEffect(() => {
-    let disposed = false, failures = 0;
+    let disposed = false, failures = 0, inFlight = false, active = true, lastRequest = 0;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
+    const visible = () => document.visibilityState !== "hidden";
     async function poll() {
+      if (disposed || inFlight || !visible()) return;
+      clearTimeout(timer);
+      inFlight = true; lastRequest = Date.now();
       try {
         const body = await fetchApiProgress<Project>(base, controller.signal);
-        if (!disposed) { setProject(body); setError(""); failures = 0; }
+        if (!disposed) { setProject(body); setError(""); failures = 0; active = translationNeedsPolling(body); }
       } catch (error) {
         if (!disposed) {
           if (error instanceof ApiRequestError && error.status === 404) { setMissing(true); disposed = true; }
           else { failures++; setError(requestErrorMessage(error)); }
         }
       }
-      finally { if (!disposed) timer = setTimeout(poll, Math.min(30000, 2500 * 2 ** Math.min(failures, 4))); }
+      finally {
+        inFlight = false;
+        if (!disposed && visible() && (active || (failures > 0 && failures < 3))) timer = setTimeout(poll, Math.min(30000, 2500 * 2 ** Math.min(failures, 4)));
+      }
     }
+    const sync = () => { if (Date.now() - lastRequest >= 500) void poll(); };
+    const visibility = () => { if (document.visibilityState === "hidden") clearTimeout(timer); else sync(); };
+    window.addEventListener("focus", sync);
+    document.addEventListener("visibilitychange", visibility);
     void poll();
-    return () => { disposed = true; controller.abort(); clearTimeout(timer); };
+    return () => { disposed = true; controller.abort(); clearTimeout(timer); window.removeEventListener("focus", sync); document.removeEventListener("visibilitychange", visibility); };
   }, [base]);
   if (missing) return <section className="space-y-4 p-6"><h1 className="text-xl font-semibold">该翻译作品已不存在</h1><Link href="/history?category=translation" className="underline">返回我的翻译作品</Link></section>;
   return <section className="mx-auto max-w-5xl space-y-6 py-6">

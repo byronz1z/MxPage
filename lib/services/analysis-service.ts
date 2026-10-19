@@ -1,7 +1,7 @@
+import { selectModel } from "@/lib/ai/model-selection";
 import { Prisma } from "@prisma/client";
-import { ZodError } from "zod";
 
-import { buildProductAnalysisPrompt, buildProductAnalysisRepairPrompt } from "@/lib/ai/prompts";
+import { buildProductAnalysisPrompt } from "@/lib/ai/prompts";
 import { productAnalysisOutputSchema } from "@/lib/ai/schemas/product-analysis";
 import { prisma } from "@/lib/db/prisma";
 import { patchProjectModelSnapshot } from "@/lib/services/project-model-snapshot-service";
@@ -11,126 +11,14 @@ import { readStorageFile } from "@/lib/storage/asset-manager";
 
 const MAX_ANALYSIS_IMAGES = 10;
 
-function normalizeModelId(value: string) {
-  return value.toLowerCase();
-}
-
-function hasCapability(model: { capabilities: unknown }, key: string) {
-  const capabilities = (model.capabilities ?? {}) as Record<string, boolean>;
-  return Boolean(capabilities[key]);
-}
-
-function isPreviewLike(modelId: string) {
-  return /(preview|experimental|beta|test)/i.test(modelId);
-}
-
-function isLiteLike(modelId: string) {
-  return /(lite|flash-lite)/i.test(modelId);
-}
-
-function isImageSpecialized(modelId: string) {
-  return /(image|imagen|recraft|flux|canvas)/i.test(modelId);
-}
-
-function isStableAnalysisCandidate(modelId: string) {
-  return !isPreviewLike(modelId) && !isLiteLike(modelId) && !isImageSpecialized(modelId);
-}
-
-function extractJsonBlock(raw: string) {
-  const direct = raw.trim();
-  if (direct.startsWith("{") || direct.startsWith("[")) {
-    return direct;
-  }
-
-  const fencedMatch = direct.match(/```json([\s\S]*?)```/i) || direct.match(/```([\s\S]*?)```/i);
-  if (fencedMatch?.[1]) {
-    return fencedMatch[1].trim();
-  }
-
-  const firstBrace = direct.indexOf("{");
-  const lastBrace = direct.lastIndexOf("}");
-  if (firstBrace >= 0 && lastBrace > firstBrace) {
-    return direct.slice(firstBrace, lastBrace + 1);
-  }
-
-  return direct;
-}
-
-function shouldAttemptRepair(error: unknown) {
-  return (
-    error instanceof ZodError ||
-    error instanceof SyntaxError ||
-    (error instanceof Error && /json|schema|parse/i.test(error.message))
-  );
-}
-
-function pickAnalysisModel(
-  provider: Awaited<ReturnType<typeof getProviderAdapter>>["provider"],
-  preferredModelId?: string | null,
-) {
-  if (preferredModelId) {
-    const preferred = provider.models.find((item) => item.modelId === preferredModelId);
-    if (preferred && hasCapability(preferred, "text")) {
-      return preferred.modelId;
-    }
-  }
-
-  const textVisionModels = provider.models.filter(
-    (item) => hasCapability(item, "text") && hasCapability(item, "vision"),
-  );
-  const textModels = provider.models.filter((item) => hasCapability(item, "text"));
-
-  const findMatch = (
-    models: typeof provider.models,
-    predicate: (model: (typeof provider.models)[number]) => boolean,
-  ) => models.find(predicate)?.modelId;
-
-  return (
-    findMatch(
-      textVisionModels,
-      (item) => item.isDefaultAnalysis && isStableAnalysisCandidate(item.modelId),
-    ) ??
-    findMatch(
-      textVisionModels,
-      (item) => normalizeModelId(item.modelId).includes("gemini") && isStableAnalysisCandidate(item.modelId),
-    ) ??
-    findMatch(
-      textVisionModels,
-      (item) => normalizeModelId(item.modelId).includes("gpt-4o") && isStableAnalysisCandidate(item.modelId),
-    ) ??
-    findMatch(textVisionModels, (item) => isStableAnalysisCandidate(item.modelId)) ??
-    findMatch(textModels, (item) => item.isDefaultAnalysis) ??
-    findMatch(textModels, (item) => isStableAnalysisCandidate(item.modelId)) ??
-    textModels[0]?.modelId ??
-    null
-  );
+function pickAnalysisModel(provider: Awaited<ReturnType<typeof getProviderAdapter>>["provider"], preferredModelId?: string | null) {
+  return selectModel(provider.models, "analysis", preferredModelId);
 }
 
 async function assetToDataUrl(asset: { filePath: string; mimeType: string | null }) {
   const buffer = await readStorageFile(asset.filePath);
   const mimeType = asset.mimeType ?? "image/png";
   return `data:${mimeType};base64,${buffer.toString("base64")}`;
-}
-
-async function repairAnalysisOutput(input: {
-  adapter: Awaited<ReturnType<typeof getProviderAdapter>>["adapter"];
-  model: string;
-  raw: string;
-}) {
-  const repaired = await input.adapter.generateText({
-    model: input.model,
-    systemPrompt: "Return one strict JSON object only.",
-    userPrompt: buildProductAnalysisRepairPrompt(input.raw),
-    monitor: {
-      operation: "analysis_output_repair",
-    },
-  });
-
-  const parsed = productAnalysisOutputSchema.parse(JSON.parse(extractJsonBlock(repaired.text)));
-  return {
-    parsed,
-    repairedRaw: repaired.text,
-  };
 }
 
 function normalizeAnalysisProviderError(error: unknown): never {
@@ -165,7 +53,7 @@ export async function analyzeProject(projectId: string, preferredModelId?: strin
     throw new Error("Project not found.");
   }
 
-  const { provider, adapter } = await getProviderAdapter();
+  const { provider, adapter } = await getProviderAdapter(undefined, undefined, { textModelIds: preferredModelId ? [preferredModelId] : undefined });
   const model = pickAnalysisModel({ ...provider, models: provider.models }, preferredModelId);
 
   if (!model) {
@@ -216,58 +104,7 @@ export async function analyzeProject(projectId: string, preferredModelId?: strin
         raw: structured.raw,
       };
     } catch (error) {
-      if (!shouldAttemptRepair(error)) {
-        normalizeAnalysisProviderError(error);
-      }
-
-      const fallbackText = await adapter.generateText({
-        model,
-        systemPrompt: "Return one strict JSON object only. No markdown.",
-        userPrompt: prompt,
-        images: imageUrls,
-        monitor: {
-          projectId,
-          operation: "project_analysis_fallback",
-        },
-      });
-
-      try {
-        const directParsed = productAnalysisOutputSchema.parse(JSON.parse(extractJsonBlock(fallbackText.text)));
-        parsedResult = directParsed as Prisma.JsonObject;
-        rawResult = {
-          mode: "text_fallback",
-          model,
-          initialError:
-            error instanceof ZodError
-              ? error.flatten()
-              : error instanceof Error
-                ? error.message
-                : "Unknown analysis error",
-          fallbackRaw: fallbackText.text,
-        };
-      } catch {
-      const repaired = await repairAnalysisOutput({
-        adapter,
-        model,
-        raw: fallbackText.text,
-      }).catch((repairError) => {
-        normalizeAnalysisProviderError(repairError);
-      });
-
-        parsedResult = repaired.parsed as Prisma.JsonObject;
-        rawResult = {
-          mode: "text_repair",
-          model,
-          initialError:
-            error instanceof ZodError
-              ? error.flatten()
-              : error instanceof Error
-                ? error.message
-                : "Unknown analysis error",
-          fallbackRaw: fallbackText.text,
-          repairedRaw: repaired.repairedRaw,
-        };
-      }
+      normalizeAnalysisProviderError(error);
     }
 
     const saved = await prisma.productAnalysis.upsert({

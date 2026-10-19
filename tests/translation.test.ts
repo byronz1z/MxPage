@@ -85,8 +85,33 @@ after(async () => {
   if (directory && path.dirname(directory) === path.resolve(tmpdir()) && path.basename(directory).startsWith("mxpage-translation-test-")) await rm(directory, { recursive: true, force: true });
 });
 
+test("creation and upload retries reuse records even after their successful response was lost", async () => {
+  const { createProject } = await import("../lib/services/project-service");
+  const input = { name: "断点恢复", platform: "general_ecommerce", style: "generic_clean", translationUpload: { batchId: randomUUID(), groupIndex: 0 } };
+  const created = await Promise.all([createProject(input), createProject(input)]);
+  assert.equal(created[0].id, created[1].id);
+  const projectId = created[0].id;
+  await assert.rejects(createProject({ ...input, name: "不同项目" }), /同一上传标识/);
+  const { POST } = await import("../app/api/projects/[id]/assets/upload/route");
+  const { NextRequest } = await import("next/server");
+  const body = { type: "MAIN", fileName: "source.png", mimeType: "image/png", base64Data: png.toString("base64"), uploadKey: `${input.translationUpload.batchId}:0:0` };
+  const upload = (value: typeof body) => POST(new NextRequest("http://localhost/api/upload", { method: "POST", body: JSON.stringify(value) }), { params: { id: projectId } });
+  const responses = await Promise.all([upload(body), upload(body)]);
+  const assets = await Promise.all(responses.map(response => response.json()));
+  assert.ok(assets.every(result => result.success));
+  assert.equal(assets[0].data.id, assets[1].data.id);
+  assert.equal(await db.productAsset.count({ where: { projectId } }), 1);
+  assert.equal((await readdir(path.join(directory, "storage", "uploads", projectId))).length, 1);
+  const mismatch = await (await upload({ ...body, fileName: "different.png" })).json();
+  assert.equal(mismatch.success, false);
+  assert.equal(await db.productAsset.count({ where: { projectId } }), 1);
+});
+
 test("two originals × two languages use four direct edits, independent ordered outputs and no DetailRun", async () => {
   resetCalls();
+  let release!: () => void;
+  const simultaneous = new Promise<void>(resolve => { release = resolve; });
+  response = async () => { if (inFlight === 2) release(); await simultaneous; return success(); };
   const sourceId = await source();
   const input = request(sourceId, ["en-US", "ja-JP"]);
   const initial = await batch.startBatch(input, credentials);
@@ -122,11 +147,57 @@ test("two originals × two languages use four direct edits, independent ordered 
     const html = renderToStaticMarkup(React.createElement(TranslationProjectWorkspace, { initialProject: (await getProjectDetail(item.projectId))! }));
     assert.match(html, /原图与译图对照/);
     assert.match(html, /下载翻译长图/);
-    assert.match(html, new RegExp(`/translate\\?batch=${input.id}`));
+    assert.ok(html.includes(`/translate/${input.id}`));
     assert.doesNotMatch(html, /设计检查|商品理解|一键生成/);
   }
   await batch.startBatch(input, credentials);
   assert.equal(calls.length, 4, "Idempotent start does not repeat completed requests");
+});
+
+for (const count of [1, 3]) test(`${count} uploaded originals become one translation result without a source-only project`, async () => {
+  resetCalls();
+  const sourceId = await source(count);
+  await db.project.update({ where: { id: sourceId }, data: { modelSnapshot: { workType: "translation" } } });
+  const originals = await db.productAsset.findMany({ where: { projectId: sourceId }, orderBy: { sortOrder: "asc" } });
+  const before = await db.project.count();
+  const input = { ...request(sourceId), reuseTranslationSources: true };
+  await batch.startBatch(input, credentials);
+  const result = await settled(input.id);
+  assert.equal(result.status, "SUCCESS");
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].projectId, sourceId);
+  assert.equal(await db.project.count(), before);
+  assert.equal(calls.length, count);
+  const kept = await db.productAsset.findMany({ where: { projectId: sourceId, type: "DETAIL" }, orderBy: { sortOrder: "asc" } });
+  assert.deepEqual(kept.map(a => a.filePath), originals.map(a => a.filePath));
+  assert.equal(result.items[0].images.length, count);
+  await batch.startBatch(input, credentials);
+  assert.equal(calls.length, count, "Reopening the batch never sends another paid request");
+});
+
+test("new multi-language uploads create only one result per language and always translate originals", async () => {
+  resetCalls();
+  const sourceId = await source(2);
+  await db.project.update({ where: { id: sourceId }, data: { modelSnapshot: { workType: "translation" } } });
+  const before = await db.project.count();
+  const input = { ...request(sourceId, ["en-US", "ja-JP"]), reuseTranslationSources: true };
+  await batch.startBatch(input, credentials);
+  const result = await settled(input.id);
+  assert.equal(result.status, "SUCCESS");
+  assert.equal(await db.project.count(), before + 1);
+  assert.equal(result.items[0].projectId, sourceId);
+  assert.notEqual(result.items[1].projectId, sourceId);
+  assert.equal(calls.length, 4);
+  assert.ok(calls.every(call => call.bytes.equals(png)));
+  const paths = await Promise.all(result.items.map(item => db.productAsset.findMany({ where: { projectId: item.projectId, type: "DETAIL" } })));
+  assert.ok(paths[1].every(a => paths[0].every(b => a.filePath !== b.filePath)));
+});
+
+test("reusing uploads cannot overwrite an existing detail project", async () => {
+  resetCalls();
+  const sourceId = await source(1);
+  await assert.rejects(batch.startBatch({ ...request(sourceId), reuseTranslationSources: true }, credentials), /新上传的翻译项目/);
+  assert.equal(calls.length, 0);
 });
 
 test("an HTTP 500 affects one image; continue skips it, explicit retry sends only the failed image", async () => {
@@ -186,6 +257,32 @@ test("stale RUNNING checkpoint is uncertain and requires explicit retry", async 
   await runtime.runWithProviderCredentials(credentials, () => translation.runTranslationProject({ ...options, retryFailed: true }));
   assert.equal(calls.length, 2);
   assert.equal((await translation.getTranslationTask(id))?.status, "SUCCESS");
+});
+
+test("translation preserves async task IDs and resumes polling without a second paid attempt", async t => {
+  resetCalls();
+  const sourceId = await source(1), batchId = randomUUID();
+  const projectId = translation.translationProjectId(batchId, sourceId, "en-US");
+  await translation.prepareTranslationProject(projectId, sourceId, "en-US", "low");
+  const options = { batchId, projectId, language: "en-US" as const, quality: "low" as const, instruction: "", active: async () => true };
+  const { OpenAICompatibleAdapter } = await import("../lib/ai/adapters/openai-compatible");
+  let posts = 0, failPoll = true;
+  t.mock.method(OpenAICompatibleAdapter.prototype, "generateImageOnce", async (input: import("../lib/ai/provider-client").ImageGenerationRequest) => {
+    if (!input.upstreamTask) {
+      await input.beforeSubmit?.(); posts++;
+      await input.onUpstreamTask!({ id: "translation-task", protocol: "evolink_tasks", status: "pending" });
+    } else assert.equal(input.upstreamTask.id, "translation-task");
+    if (failPoll) throw new Error("poll disconnected");
+    return { b64Json: png.toString("base64") };
+  });
+  await runtime.runWithProviderCredentials(credentials, () => translation.runTranslationProject(options));
+  const id = translation.translationTaskId(batchId, projectId);
+  assert.equal((await translation.getTranslationTask(id))?.progress.images[0].upstreamTask?.id, "translation-task");
+  failPoll = false;
+  await runtime.runWithProviderCredentials(credentials, () => translation.runTranslationProject(options));
+  assert.equal(posts, 1);
+  const result = await translation.getTranslationTask(id);
+  assert.equal(result?.status, "SUCCESS"); assert.equal(result?.progress.images[0].attempts, 1);
 });
 
 test("late translation response cannot overwrite a new owner and its saved asset is recovered without re-billing", async () => {

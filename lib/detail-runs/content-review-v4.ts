@@ -59,6 +59,7 @@ export const contentPlacementSchema = z.object({ placements: z.array(z.object({
 type CoveragePlan = { sections: Array<{ kind: string; copy: string; objective: string; evidence: string[] }>; contentCoverage?: ContentCoverage };
 
 export function heroOnlyContentModules(plan: CoveragePlan) {
+  if (!plan.sections.some(section => section.kind === "DETAIL")) return [];
   return (plan.contentCoverage || []).filter(entry => ["covered", "partial"].includes(entry.status)
     && entry.sectionIndexes.length > 0
     && entry.sectionIndexes.every(index => plan.sections[index]?.kind === "HERO" && plan.sections[index].copy.trim()));

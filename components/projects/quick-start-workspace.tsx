@@ -7,6 +7,7 @@ import { Loader2, UploadCloud, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { fileToBase64Payload } from "@/lib/utils/base64-upload";
+import { validateUploadFiles } from "@/lib/storage/upload-limits";
 import { ApiRequestError, readApiResponse as payload, requestErrorMessage } from "@/lib/utils/request-error";
 
 export function QuickStartWorkspace() {
@@ -42,10 +43,11 @@ export function QuickStartWorkspace() {
   function addFiles(incoming: File[]) {
     if (uploadDisabled || !incoming.length) return;
     const next = [...files, ...incoming];
-    if (next.length > 8 || next.some(f => f.size > 10 * 1024 * 1024 || !["image/png", "image/jpeg", "image/webp"].includes(f.type))) {
-      toast.error("支持 PNG、JPEG、WebP，最多 8 张，每张不超过 10MB");
+    if (next.length > 8) {
+      toast.error("每套最多 8 张图片");
       return;
     }
+    try { validateUploadFiles(next); } catch (error) { toast.error(error instanceof Error ? error.message : "图片校验失败"); return; }
     setFiles(next);
   }
   useEffect(() => {
@@ -117,7 +119,7 @@ export function QuickStartWorkspace() {
     <fieldset disabled={busy || Boolean(projectId)} className="space-y-6 disabled:opacity-70">
 
       {!files.length && <div {...dropHandlers} className={`mx-auto flex aspect-square w-full max-w-md flex-col items-center justify-center gap-3 rounded-3xl border-2 border-dashed p-4 text-center transition-colors focus-within:border-foreground/50 sm:p-6 ${dragging ? "border-foreground bg-muted ring-4 ring-foreground/10" : "border-input bg-background"}`}>
-        <UploadCloud className="h-8 w-8 text-muted-foreground"/><span className="font-medium" role="status">{dragging ? "松开鼠标，添加商品图片" : "将商品图片拖到此方框，或点击选择"}</span><span className="text-sm text-muted-foreground">最多 8 张，每张不超过 10MB；第一张作为主图</span>
+        <UploadCloud className="h-8 w-8 text-muted-foreground"/><span className="font-medium" role="status">{dragging ? "松开鼠标，添加商品图片" : "将商品图片拖到此方框，或点击选择"}</span><span className="text-sm text-muted-foreground">最多 8 张，每张不超过 20MB；第一张作为主图</span>
         <Button type="button" variant="outline" className="mt-1 gap-2 px-5" onClick={() => fileInput.current?.click()}><UploadCloud className="h-4 w-4"/>{files.length ? "继续添加图片" : "选择商品图片"}</Button>
         {files.length > 0 && <span className="text-xs text-muted-foreground" role="status">已选择 {files.length} / 8 张图片</span>}
 

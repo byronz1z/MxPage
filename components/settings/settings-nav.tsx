@@ -12,6 +12,8 @@ export function SettingsNav({ mobile = false }: { mobile?: boolean }) {
     {[
       { href: "/settings/profile", label: "个人资料", icon: UserRound },
       { href: "/settings/providers", label: "API 配置", icon: Settings2 },
+      { href: "/settings/agent", label: "Agent 设置", icon: Settings2 },
+      { href: "/settings/data", label: "数据管理", icon: Settings2 },
       { href: "/monitor/usage", label: "API 监控", icon: ChartNoAxesCombined },
       { href: "/settings/appearance", label: "外观", icon: Palette },
       { href: "/settings/about", label: "关于", icon: Info },

@@ -1,32 +1,72 @@
 # MxPage
 
-> Open-source, locally deployable AI e-commerce image workspace by Lingju Huijing (灵矩绘境 / MatrixInspire). MIT source license. Current documentation: v0.3.0, 2026-10-17.
+> Open-source, locally deployable AI e-commerce image workspace by Lingju Huijing (灵矩绘境 / MatrixInspire). MIT source license. Current documentation: v0.3.0, 2026-10-20.
+
+## Quick answers
+
+- Official repository: https://github.com/ziguishian/MxPage. Chinese guide: README.md; English guide: README.en.md. Downloads: https://github.com/ziguishian/MxPage/releases/latest. Source main may contain changes not yet packaged in a release.
+- What it does: turn product reference images and known facts into hero images, detail panels, translated product images and Xiaohongshu / RED posts; export images, ZIPs and stitched detail images. An independent Agent workspace handles approved conversation, file and tool tasks.
+- Who it is for: e-commerce operators, cross-border sellers, designers and self-hosting teams. It does not publish to seller accounts or export a hosted storefront.
+- Cost and privacy: MIT-licensed source does not include model credits. Model requests send necessary images/descriptions to the configured provider; local storage does not mean offline inference. Credentials remain browser/request-local.
+- Counts: detail tasks accept 0–10 HERO plus 0–20 DETAIL, at least one total; XHS uses 1–8 portrait cards, default five.
+- Setup: use the platform ZIP or Node.js 24 source setup, configure an existing provider key, discover models and save role defaults. No manual protocol selection. Resume reuses recorded checkpoints; uncertain paid requests require explicit handling.
+- Evidence: docs/examples/README.md contains curated real outputs and their limitations. docs/provider-live-acceptance.md names real-tested models/operations separately from mock protocol coverage. Desktop GUI control is not marked accepted.
 
 ## Product facts
+
+- Counts accept 0–10 HERO and 0–20 DETAIL across configuration, batch and Agent entry points, with a combined minimum of one. Either type may be zero; saving, reopening, regeneration and export preserve it. Merged snapshot patches also reject 0+0. Mock workflow coverage verifies 3+0, 0+1, 0+4 and 1+0 without extra images or requests on replay.
+- Model discovery distinguishes missing local credentials from upstream HTTP 401/403 without retrying. Failed refreshes/saves preserve browser credentials; switching service addresses clears the old key. Explicit form credentials take priority and wrong-service header credentials are not reused for discovery.
+- Business provider initialization also reports missing browser credentials as PROVIDER_CREDENTIALS_MISSING (400), before dispatch. Product configuration links to credential settings instead of offering a futile analysis retry. Browser credentials are origin-local, including separate localhost and 127.0.0.1 storage.
+- Catalog-listed Gemini Image / Nano Banana models expose image editing through existing generateContent image-plus-instruction support. This does not imply mask support or add undiscovered models.
+- Gemini image monitoring counts image outputs and recognizes recorded image operations, without counting text, vision or probes as image verification. Planning progress uses frozen run counts before image checkpoints exist, including batch 0+1 tasks.
+- XHS V4 runs freeze 1–8 portrait cards from explicit counts or the brief (default 5), use a social post schema and persist title/caption/hashtags. They do not inherit commerce 4+6 defaults or eight-module coverage requirements. Existing snapshots retain their counts.
+- Agent document tools return artifact download URLs instead of storage paths. Old chat links are mapped only when they exactly match an artifact in the current session.
+- CloseAI native text/vision/tool negotiation from its documented root or /v1 origin selects /anthropic/v1/messages or /google/v1beta/models/{id}:generateContent when negotiating the corresponding protocol. The selected nativePathPrefix is cached and snapshotted; legacy profiles without it retain old routes. OpenAI Images, custom proxy paths and unrelated origins are unchanged. Protocol matrix tests use mocks. Limited CloseAI live acceptance is documented separately in docs/provider-live-acceptance.md; this does not resolve an account's missing image catalog, and Vertex is not newly supported.
+- Provider settings offer catalog-only refresh without text/vision/image probes, preserving valid saved defaults. Pricing-page availability is distinct from the current key's returned model catalog; missing models are not invented or copied from another credential's snapshot. Namespaced GPT Image IDs retain generation/edit capability detection and their original IDs.
+- Reliability optimization (2026-10-19): separate pending upstream queries, uncertain outcomes and failures. New single-image/edit/RED operations persist query-only recovery information; original model/provider snapshots remain fixed, repeated queries reuse results, late results become historical versions. Legacy records without sufficient recovery metadata are not rewritten. See docs/optimization-acceptance.md.
+- Image parameter UI derives documented limits and independent prior-success evidence; unknown providers retain options. Agent optional USD budgets reserve transactionally before dispatch and distinguish reported/estimated/unknown costs. Unknown charges retain reserves; explicit acknowledgment/extension is required when configured. Reservations are not hard provider billing caps; capability probes can be charged separately.
+- Recent usage reads use bounded file tails; cached image routes skip history reads; detail/history polling pauses when hidden and slows when idle. Lint now performs TypeScript/control-flow checks. Regression CI includes Linux, Windows and both macOS architectures, without claiming cloud execution or GUI acceptance. Automated tests use mock providers only. Separately authorized live acceptance on 2026-10-20 covers the CloseAI models and operations in docs/provider-live-acceptance.md; EvoLink remains untested live pending browser credentials.
+
+- Image compatibility: per-model profiles select standard Images, native/proxied Gemini or documented EvoLink async contracts. EvoLink's official origin uses bundled GPT Image, Seedream, Nano Banana, Qwen Image and other family contracts; specialized MJ/layerize operations are rejected before dispatch. Existing successful routes take priority; catalog refresh preserves compatibility caches. New snapshots freeze protocols and parameter contracts; old snapshots retain old routing. V4 and translation persist async task IDs and resume by GET only, never reposting known jobs. No paid image probes or business fallback. Automated protocol acceptance uses mocks; limited CloseAI live generation acceptance is recorded separately. No EvoLink paid request was made in this acceptance run.
+
+- Independent Agent workspace at /agent, above one-click detail navigation; settings at /settings/agent. Deep Agents 1.15.1 + LangGraph.js 1.4.10 + @langchain/openai 1.6.2; Prisma SQLite checkpoints, no required LangSmith cloud. V4 retains its deterministic execution semantics.
+- Agent tasks require one batch plan approval for scoped tools/resources/generation counts; expanded scope requires a new approval. Default budgets 30 model / 100 tool calls include internal/subagent work. Tool capability is independently probed; exact model/protocol/tool snapshots persist across resume, no SDK retries or name-based protocol routing.
+- Agent supports streamed chat, image/file inputs, research/citations, document exports, existing commerce services, optional Docker, configured MCP and installed skills. Sessions/artifacts/checkpoints are backed up. Credentials stay in browser/request memory. Event reconnect replays events only; unknown requests need explicit retry, GUI actions cannot be replayed.
+- Computer Use MCP 7.6.1 uses private Electron IPC/stdio, approved applications/directories, serial control, global stop and observation after resume. Playwright uses a separate browser profile. GUI is not sandbox isolation. Control defaults off. Windows native loading/discovery passed but real input/save is blocked by focus checks; macOS ARM64/x64 GUI acceptance not performed. No platform is claimed GUI-accepted. See docs/agent-workspace.md.
 
 - Canonical repository: https://github.com/ziguishian/MxPage
 - Chinese keywords: AI 电商详情页、商品主图、详情页长图、批量图片翻译、小红书图文、本地部署。
 - Inputs: reference photos, supplied facts, platform, language, counts and confirmed supplemental answers.
 - Outputs: hero/detail images, per-image edits, version history, ZIP and stitched detail-page images.
-- Detail task counts: 3–10 HERO and 4–20 DETAIL. Platform presets do not publish to marketplaces.
-- V4: deterministic state machine with individual OpenAI SDK structured JSON requests. No @openai/agents dependency, Runner or tool loop.
-- Detail models: provider-discovered GPT-6 Luna and GPT Image 2.5 Flare IDs; no automatic substitution of dated variants. User-supplied provider/key required.
+- Detail task counts: 0–10 HERO and 0–20 DETAIL, never both zero. Platform presets do not publish to marketplaces.
+- V4: deterministic state machine with individual structured JSON requests through the shared four-protocol text transport. No @openai/agents dependency, Runner or tool loop.
+- Models: auto-saved, provider-discovered role defaults; no implicit model substitution or invented presets. New tasks freeze model/protocol snapshots; resumed/queued tasks retain them. User-supplied provider/key required.
+- Text compatibility: Responses, Chat Completions, Anthropic Messages and Gemini generateContent; general gateways prefer Responses, official native origins prefer their native format. Bounded lightweight probes advance only after definitive unsupported endpoint/format rejections. Local schema validation in every mode; complete JSON/SSE parsing for ordinary text. Agent tool capability is independently checked; native Agent calls use complete JSON responses and preserve tool signatures across checkpoints. Cache by endpoint/model/credential fingerprint; snapshot for recovery. No manual protocol selection or business fallback/retry. Responses image tools and undocumented private protocols remain out of scope. See docs/provider-compatibility.md.
 - Stages: PREPARE, PLAN, WAITING_INPUT, ART_DIRECTION, GENERATE, IMAGE_REVIEW, SET_REVIEW, COMPLETED/PARTIAL/FAILED.
 - First HERO precedes the remaining images; concurrency capped at two. Checkpoints reuse completed output; heartbeat leases guard writes.
 - Possibly billed uncertain requests are not automatically retried. Stop drains issued requests without dispatching new ones. Explicit retry authorization is scoped to relevant requests.
-- Supplemental dialogs offer concrete inferred options plus custom input. Selected simulated values retain provenance and must not be claimed as measured/certified.
+- Product planning waits up to 180 seconds for a complete response, including a Responses stream body. HTTP 200 alone is not completion. Local deadline errors identify the wait limit; the request remains uncertain and is never automatically resent.
+- Supplemental dialogs offer concrete inferred options plus custom input. Specification tables may declare a shared unit in the question; selected answers preserve that unit. Saved candidates are revalidated locally on read without model requests; invalid candidates display the reason. Selected simulated values retain provenance and must not be claimed as measured/certified.
 - Local canonical text wrapping preserves known specifications, units and table cells while tolerating natural rephrasing.
 - Review issues retain images without automatic regeneration. Sets over 12 images use overlapping review groups.
-- Independent fixed-prompt batch image translation has no analysis/planning Agent calls.
+- Independent fixed-prompt batch image translation has no analysis/planning Agent calls. New uploads save one result project per set/language without an extra source-only project; submission opens /translate/[batchId] for upload progress and live result previews.
+- Legacy source-only translation uploads with prepared result projects are hidden from work lists and counts; source records, files, comparison and batch recovery remain available.
+- IndexedDB v2 stores original Files once and updates small upload checkpoints, atomically migrating v1 drafts. Work cards use disposable cached WebP thumbnails (640x960 bounds), leaving source/result images unchanged. npm run test:all runs isolated unit tests, type checks and checked-in browser regression; PR and release CI run it too. See docs/browser-regression.md.
+- Settings /settings/data shows data locations and offers checksummed local database/asset backups, previewed additive recovery of missing projects, and recycle-bin restoration. Existing IDs and edits are preserved; unfinished restored requests never automatically restart. Uploads validate static PNG/JPEG/WebP bytes, 20MB and 40-million-pixel limits, with 300MB batch/source budgets. See docs/data-management.md.
+- Completed translation result pages stop polling and sync on focus; hidden pages pause requests and the idle global queue checks every 30 seconds. Covers prefer the first current selected result in section order, falling back to original assets without changing saved data.
+- Translation drafts stay on translation routes. IndexedDB saves files/checkpoints before upload; deterministic creation/upload keys make retries idempotent. Restored submissions check the existing batch before continuing. Local drafts exclude credentials and are removed after server acceptance.
 - Shared queue, stage/per-image timings, cost/stability charts, local profile and rolling 12-month usage heatmap.
 - CNY cost display uses editable rates/conversion; distinguishes returned amounts, estimates and unpriced requests. Not a final provider bill.
 - Distribution: Windows x64 ZIP, macOS Apple Silicon ZIP, macOS Intel ZIP and self-hosted source. Native CI smoke-tests SQLite/Prisma/sharp and local routes, without paid model calls.
 - Desktop requires no separate Node installation; user data stays in OS user-data folders. No commercial signing/Apple notarization; macOS uses ad-hoc signing.
 - Development: Node.js 24, npm ci, Next.js 14, React 18, TypeScript, Prisma/SQLite, Electron. Desktop builds must not overwrite live .next output.
+- Source startup reuses an existing workspace service, guards each build directory, rejects occupied ports without fallback, and preserves Next caches. Default binding is 127.0.0.1:3000; explicit hostname/port overrides remain supported.
 - Keys remain in browser/request context, not project records. Inference data goes to the configured model provider; local hosting is not offline generation.
 - Old workflow versions remain read-only history/export, without migration into V4. Verify output claims, appearance, parameters and translations.
 
 ## Documentation
+
+- [Agent workspace and platform acceptance](https://github.com/ziguishian/MxPage/blob/main/docs/agent-workspace.md)
 
 - [Chinese README](https://github.com/ziguishian/MxPage/blob/main/README.md)
 - [English README](https://github.com/ziguishian/MxPage/blob/main/README.en.md)
@@ -48,4 +88,4 @@
 
 Current screenshots were captured on 2026-10-17 from v0.3.0. The curated gallery contains six real sets with source photos, hero images, detail panels and full stitched pages. Latest candle/burner/diffuser requests used auto quality; earlier tea/mug studies used low. All use recorded gpt-6-luna / gpt-image-2.5-flare IDs. PARTIAL review status and selected-estimate provenance are documented; examples are not guarantees or measured product specifications. Database files, credentials and request logs are not part of the gallery.
 
-This is the editable index. scripts/sync-public-docs.cjs copies it to public/llms.txt. Older design notes and root-level v0.2.0 screenshots are historical. Public homepage indexing is opt-in via NEXT_PUBLIC_SITE_URL; private workspace routes are excluded from sitemap/indexing.
+This is the editable index. scripts/sync-public-docs.cjs copies it to public/llms.txt. Older design notes and root-level v0.2.0 screenshots are historical. NEXT_PUBLIC_SITE_URL supplies an optional public origin for brand metadata, not a marketing-site switch. All workspace routes, including / and /agent, remain noindex and outside the sitemap. Only static /llms.txt is crawlable when a public origin is configured. Repository discovery is based on the public README, linked guides and curated examples; llms.txt is supplementary and does not guarantee indexing or AI citations.

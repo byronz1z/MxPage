@@ -30,6 +30,14 @@ jobs:
       - run: npm ci
       - run: npm run prisma:generate
       - run: npm test
+      - run: npm run typecheck
+      - run: npx playwright-core install --with-deps chromium
+      - run: npm run test:browser
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-regression-failure
+          path: test-output/browser-regression/
       - name: Check tag matches package version
         if: startsWith(github.ref, 'refs/tags/')
         run: node -e "if(process.env.GITHUB_REF_NAME !== 'v' + require('./package.json').version) process.exit(1)"
@@ -69,6 +77,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run prisma:migrate
+      - run: npm run check:agent-driver
       - run: npm run build:desktop
       - run: npx --no-install electron-builder ${{ matrix.flags }} --publish never
       - run: npm run smoke:desktop

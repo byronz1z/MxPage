@@ -317,6 +317,9 @@ export default async function ApiUsageMonitorPage({
                 <div className="mt-3 space-y-2 text-xs text-muted-foreground">
                   <p className="flex items-start gap-2 break-all">
                     <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-sky-500" />
+                    {entry.protocol && <span>协议：{entry.protocol}</span>}
+                    {entry.upstreamModel && <span>上游返回模型：{entry.upstreamModel}</span>}
+                    {entry.upstreamTaskId && <span>上游任务：{entry.upstreamTaskId}</span>}
                     <span>最终命中端点：{entry.finalEndpoint ?? entry.endpoint}</span>
                   </p>
                   {entry.retrySummary ? (

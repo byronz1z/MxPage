@@ -16,6 +16,8 @@ export async function withAssetUploadLock<T>(projectId: string, work: () => Prom
 }
 
 export async function assertNoDetailRun(projectId: string, allowWaiting = false) {
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { modelSnapshot: true } });
+  if (typeof (project?.modelSnapshot as { trashedAt?: unknown } | null)?.trashedAt === "string") throw new Error("作品已在回收站，请先到设置 → 数据管理还原。");
   const translation = await prisma.generationTask.findFirst({ where: { projectId, id: { startsWith: "translate:" }, taskType: "TRANSLATE_PAGE", status: "RUNNING", updatedAt: { gt: new Date(Date.now() - 60000) } } });
   if (translation) throw new Error("图片翻译仍在运行，请停止并等待当前请求结束后再修改。");
   const active = await prisma.detailRun.findFirst({ where: { projectId, OR: [

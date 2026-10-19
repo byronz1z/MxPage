@@ -5,6 +5,12 @@ import type { NextRequest } from "next/server";
 import { env } from "@/lib/utils/env";
 
 export type RequestProviderCredentials = {
+  // In-memory only. Agent tasks meter delegated V4/image calls separately.
+  agentBeforeDispatch?: () => Promise<string | void>;
+  agentAfterDispatch?: (reservationId: string | void, response: import("@/lib/agent/budget").CostResponse) => Promise<void>;
+  agentRunId?: string;
+  legacyTextProtocol?: boolean;
+  providerSnapshot?: import("./provider-service").ProviderSnapshot;
   apiKey?: string;
   baseUrl?: string;
 };

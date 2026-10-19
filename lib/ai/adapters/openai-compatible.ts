@@ -1,3 +1,8 @@
+import { callText } from "@/lib/ai/text-transport";
+import { getRequestProviderCredentials } from "@/lib/services/provider-runtime";
+import { textEndpoint, normalizeOpenAiBaseUrl, type TextSettings } from "@/lib/ai/text-protocol";
+import { resolveImageModel, resolveImageProtocol, type ImageSettings } from "@/lib/ai/image-protocol";
+import { generateEvoLinkImage } from "./evolink-image";
 import { z } from "zod";
 
 import type {
@@ -328,7 +333,7 @@ function classifyProbeResult(status: number, body: string) {
 export class OpenAICompatibleAdapter implements ProviderAdapter {
   private preferredBaseUrl: string | null = null;
 
-  constructor(private readonly baseUrl: string, private readonly apiKey: string) {}
+  constructor(private readonly baseUrl: string, private readonly apiKey: string, private readonly settings: TextSettings & ImageSettings = {}) {}
 
   private buildRequestUrls(path: string) {
     const urls = buildOpenAiCompatibleUrls(this.baseUrl, path);
@@ -356,8 +361,12 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     monitor?: AiMonitorContext,
     options?: {
       suppressUsageLog?: boolean;
+      protocol?: string;
+      skipModelDispatch?: boolean;
+      model?: string;
     },
   ) {
+    const costReservation = init?.method === "POST" && !options?.skipModelDispatch ? await getRequestProviderCredentials().agentBeforeDispatch?.() : undefined;
     const controller = new AbortController();
     const externalSignal = init?.signal;
     const abortFromExternalSignal = () => controller.abort(externalSignal?.reason);
@@ -370,7 +379,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     const startedAt = Date.now();
     const method = init?.method ?? "GET";
     const bodyPayload = tryParseJsonBody(init?.body);
-    const model = tryReadBodyModel(init?.body) ?? inferModelFromEndpoint(url, bodyPayload);
+    const model = options?.model ?? tryReadBodyModel(init?.body) ?? inferModelFromEndpoint(url, bodyPayload);
     const category = inferCategory(url, bodyPayload);
     const requestBytes = typeof init?.body === "string" ? Buffer.byteLength(init.body) : 0;
 
@@ -381,7 +390,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
           ...(typeof FormData !== "undefined" && init?.body instanceof FormData
             ? {}
             : { "Content-Type": "application/json" }),
-          Authorization: `Bearer ${this.apiKey}`,
+          ...(["api.anthropic.com", "generativelanguage.googleapis.com"].includes(new URL(url).hostname) ? {} : { Authorization: `Bearer ${this.apiKey}` }),
           ...(extraHeaders ?? {}),
           ...(init?.headers ?? {}),
         },
@@ -390,12 +399,16 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       });
 
       const body = await response.text();
+      if (costReservation) await getRequestProviderCredentials().agentAfterDispatch?.(costReservation, { model, category, requestBody: init?.body, responseBody: body, statusCode: response.status, success: response.ok });
+      const upstreamModel = tryParseJsonBody(body)?.model;
       if (!options?.suppressUsageLog) {
         await logApiUsage({
           providerBaseUrl: normalizeBaseUrl(this.baseUrl),
           endpoint: url,
           method,
           model,
+          protocol: options?.protocol,
+          upstreamModel: typeof upstreamModel === "string" ? upstreamModel : undefined,
           ...readMonitorContext(monitor),
           category,
           statusCode: response.status,
@@ -415,12 +428,14 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
         durationMs: Date.now() - startedAt,
       };
     } catch (error) {
+      if (costReservation) await getRequestProviderCredentials().agentAfterDispatch?.(costReservation, { model, responseBody: "", statusCode: 0, success: false });
       if (!options?.suppressUsageLog) {
         await logApiUsage({
           providerBaseUrl: normalizeBaseUrl(this.baseUrl),
           endpoint: url,
           method,
           model,
+          protocol: options?.protocol,
           ...readMonitorContext(monitor),
           category,
           statusCode: 0,
@@ -591,84 +606,18 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     return JSON.parse(response.body) as T;
   }
 
-  private async requestChatCompletion<T>(
-    body: Record<string, unknown>,
-    timeoutMs?: number,
-    monitor?: AiMonitorContext,
-    options?: { suppressUsageLog?: boolean; signal?: AbortSignal },
-  ) {
-    try {
-      return await this.requestJson<T>("/chat/completions", {
-        method: "POST",
-        body: JSON.stringify(body),
-        signal: options?.signal,
-      }, timeoutMs, monitor, options);
-    } catch (error) {
-      if (!("temperature" in body) || !isUnsupportedTemperatureError(error)) {
-        throw error;
-      }
-
-      return this.requestJson<T>("/chat/completions", {
-        method: "POST",
-        body: JSON.stringify(omitTemperature(body)),
-        signal: options?.signal,
-      }, timeoutMs, monitor, options);
-    }
-  }
-  private async requestMultipartJson<T>(
-    path: string,
-    fields: Record<string, string | number | boolean | null | undefined>,
-    images: string[],
-    options?: {
-      imageFieldName?: "image" | "image[]";
-      timeoutMs?: number;
-      monitor?: AiMonitorContext;
-      signal?: AbortSignal;
-    },
-  ) {
-    const form = new FormData();
-
-    for (const [key, value] of Object.entries(fields)) {
-      if (value !== null && value !== undefined) {
-        form.append(key, String(value));
-      }
-    }
-
-    const imageFieldName = options?.imageFieldName ?? (images.length > 1 ? "image[]" : "image");
-    images.forEach((image, index) => {
-      form.append(imageFieldName, dataUrlToBlob(image), `image-${index + 1}.png`);
-    });
-
-    const response = await this.requestRaw(
-      path,
-      {
-        method: "POST",
-        body: form,
-        signal: options?.signal,
-      },
-      options?.timeoutMs,
-      options?.monitor,
-    );
-
-    if (!response.ok) {
-      throw new Error(`Provider request failed (${response.status}): ${response.body}`);
-    }
-
-    return JSON.parse(response.body) as T;
-  }
-
   private async requestGoogleJson<T>(
     path: string,
     body: unknown,
     timeoutMs = 45000,
     monitor?: AiMonitorContext,
     signal?: AbortSignal,
+    native = false,
   ) {
     const base = deriveGoogleBaseUrl(this.baseUrl);
-    const attempts = [
-      `${base}/v1${path}`,
-      `${base}/v1beta${path}`,
-    ];
+    // Native Gemini image generation uses one endpoint and never resends on failure.
+    const version = /\/v1$/i.test(normalizeBaseUrl(this.baseUrl)) ? "v1" : "v1beta";
+    const attempts = [native ? `${normalizeOpenAiBaseUrl(this.baseUrl).replace(/\/v\d+(?:beta)?$/, "/v1beta")}${path}` : `${base}/${version}${path}`];
     const collapsedAttempts: Array<{
       endpoint: string;
       statusCode: number;
@@ -743,6 +692,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
         endpoint: finalSuccess.url,
         finalEndpoint: finalSuccess.url,
         method: "POST",
+        protocol: native ? "gemini_native" : "gemini_proxy",
         model,
         ...readMonitorContext(monitor),
         category: inferCategory(finalSuccess.url, typeof body === "object" ? (body as Record<string, unknown>) : null),
@@ -770,6 +720,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       endpoint: attempts[attempts.length - 1] ?? `${base}/v1${path}`,
       finalEndpoint: attempts[attempts.length - 1] ?? `${base}/v1${path}`,
       method: "POST",
+      protocol: native ? "gemini_native" : "gemini_proxy",
       model,
       ...readMonitorContext(monitor),
       category: inferCategory(`${base}/v1${path}`, typeof body === "object" ? (body as Record<string, unknown>) : null),
@@ -786,45 +737,6 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     });
 
     throw new Error(`Google protocol request failed: ${errorSummary}`);
-  }
-
-  private async repairStructuredOutput<T>(input: StructuredRequest<T>, raw: string, reason: string) {
-    const payload = await this.requestChatCompletion(
-      withOptionalTemperature(
-        input.model,
-        {
-          model: input.model,
-          response_format: { type: "json_object" },
-          messages: [
-          {
-            role: "system",
-            content: "You repair malformed model output into strict valid JSON. Return JSON only.",
-          },
-          {
-            role: "user",
-            content: [
-              `The previous response could not be parsed.`,
-              `Reason: ${reason}`,
-              "Convert the following content into strict valid JSON that matches the intended structure.",
-              "Do not add markdown fences or commentary.",
-              "",
-              raw,
-            ].join("\n"),
-          },
-          ],
-        },
-        0,
-      ),
-      Math.min(input.timeoutMs ?? 60000, 45000),
-      input.monitor,
-      { suppressUsageLog: input.suppressUsageLog, signal: input.signal },
-    );
-
-    const repairedRaw = extractTextContent(payload);
-    return {
-      parsed: tryParseStructuredPayload(repairedRaw, input.schema),
-      raw: repairedRaw,
-    };
   }
 
   private async probeGeminiImageSupport(model: string) {
@@ -969,7 +881,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
   }
 
   async testConnection() {
-    await this.requestJson<{ data?: unknown[] }>("/models", { method: "GET" });
+    await this.listModels();
     return {
       ok: true,
       providerLabel: normalizeBaseUrl(this.baseUrl),
@@ -977,62 +889,48 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
   }
 
   async listModels() {
-    const payload = await this.requestJson<{ data?: Array<Record<string, unknown> & { id: string; label?: string; name?: string }> }>("/models", {
-      method: "GET",
+    // Read-only discovery may try another documented endpoint after 404/405.
+    // Auth errors, timeouts and accepted responses never trigger a fallback.
+    const headers = { "x-api-key": this.apiKey, "anthropic-version": "2023-06-01", "x-goog-api-key": this.apiKey };
+    const nativeUrl = `${normalizeOpenAiBaseUrl(this.baseUrl).replace(/\/v\d+(?:beta)?$/, "/v1beta")}/models`;
+    const nativeOrigin = new URL(this.baseUrl).hostname === "generativelanguage.googleapis.com";
+    let response = nativeOrigin ? await this.fetchRaw(nativeUrl, { method: "GET", headers }) : await this.requestRaw("/models", { method: "GET", headers });
+    if (!nativeOrigin && [404, 405].includes(response.status)) response = await this.fetchRaw(nativeUrl, { method: "GET", headers });
+    if (!response.ok) throw Object.assign(new Error(`Provider model discovery failed (${response.status})`), {
+      status: response.status,
+      ...([401, 403].includes(response.status) ? { code: "PROVIDER_DISCOVERY_AUTH_ERROR" } : {}),
     });
-    return (payload.data ?? []).map((item) => ({
-      id: item.id,
-      label: item.label ?? item.name ?? item.id,
+    const payload = JSON.parse(response.body);
+    const items: Array<Record<string, any>> = payload.data ?? payload.models;
+    if (!Array.isArray(items)) throw new Error("模型列表格式无法识别，请检查服务地址。");
+    if (items.some(item => typeof (item.id ?? item.name) !== "string" || !(item.id ?? item.name))) throw new Error("模型列表包含无效 ID。");
+    return items.map((item) => ({
+      id: String(item.id ?? item.name),
+      label: item.label ?? item.displayName ?? item.name ?? item.id,
       type: typeof item.type === "string" ? item.type : typeof item.category === "string" ? item.category : null,
       category: typeof item.category === "string" ? item.category : typeof item.type === "string" ? item.type : null,
+      // Recognized advertised endpoints only. Never accept arbitrary endpoint URLs.
+      imageProtocol: (item.supported_endpoint_types?.includes("image-generation") || item.supported_endpoints?.includes("/images/generations")) ? "openai_images" as const
+        : item.supported_endpoints?.includes("generateContent") && (item.output_modalities?.includes("image") || item.type === "image") ? "gemini_native" as const : undefined,
       modalities: Array.isArray(item.modalities)
         ? item.modalities.filter((entry): entry is string => typeof entry === "string")
         : Array.isArray(item.capabilities)
           ? item.capabilities.filter((entry): entry is string => typeof entry === "string")
-          : undefined,
+          : item.supportedGenerationMethods?.includes("generateContent") ? ["text", "vision"] : undefined,
     }));
   }
 
   async generateText(input: TextRequest) {
-    const payload = await this.requestChatCompletion(
-      withOptionalTemperature(input.model, {
-        model: input.model,
-        messages: buildMessages(input),
-      }, 0.4),
-      input.timeoutMs ?? 60000,
-      input.monitor,
-      { suppressUsageLog: input.suppressUsageLog, signal: input.signal },
-    );
-
-    return {
-      text: extractTextContent(payload),
-    };
+    const result = await callText({ ...this.settings, apiKey: this.apiKey, baseUrl: this.baseUrl,
+      model: input.model, system: input.systemPrompt || "", input: input.userPrompt, images: input.images,
+      timeoutMs: input.timeoutMs ?? 60000, signal: input.signal, monitor: input.monitor, suppressUsageLog: input.suppressUsageLog });
+    return { text: result.text };
   }
-
   async generateStructured<T>(input: StructuredRequest<T>) {
-    const payload = await this.requestChatCompletion(
-      withOptionalTemperature(input.model, {
-        model: input.model,
-        messages: buildMessages(input),
-        response_format: { type: "json_object" },
-      }, 0.2),
-      input.timeoutMs ?? 60000,
-      input.monitor,
-      { suppressUsageLog: input.suppressUsageLog, signal: input.signal },
-    );
-
-    const raw = extractTextContent(payload);
-
-    try {
-      const parsed = tryParseStructuredPayload(raw, input.schema);
-      return { parsed, raw };
-    } catch (error) {
-      return this.repairStructuredOutput(
-        input,
-        raw,
-        error instanceof Error ? error.message : "Unknown structured parse error",
-      );
-    }
+    const result = await callText({ ...this.settings, apiKey: this.apiKey, baseUrl: this.baseUrl,
+      model: input.model, system: input.systemPrompt || "", input: input.userPrompt, images: input.images, schema: input.schema,
+      timeoutMs: input.timeoutMs ?? 60000, signal: input.signal, monitor: input.monitor, suppressUsageLog: input.suppressUsageLog });
+    return { parsed: result.parsed as T, raw: result.text };
   }
 
   private async generateGeminiImageWithGoogleProtocol(input: {
@@ -1044,12 +942,12 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     aspectRatio?: "1:1" | "3:4" | "9:16";
     monitor?: AiMonitorContext;
     signal?: AbortSignal;
-  }) {
+  }, native = false) {
     const imageParts = [input.baseImage ?? null, ...(input.referenceImages ?? [])]
       .filter(Boolean)
       .map((item) => ({ inlineData: dataUrlToInlineData(item as string) }));
 
-    const payload = await this.requestGoogleJson<any>(`/models/${input.model}:generateContent`, {
+    const payload = await this.requestGoogleJson<any>(`/models/${encodeURIComponent(input.model.replace(/^models\//, ""))}:generateContent`, {
       contents: [
         {
           role: "user",
@@ -1063,61 +961,31 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
           aspectRatio: resolveAspectRatio(input),
         },
       },
-    }, 90000, input.monitor, input.signal);
+    }, 90000, input.monitor, input.signal, native);
 
     return extractGoogleImageResult(payload);
   }
 
-  private async generateOpenAiGptImageWithReferences(input: {
-    model: string;
-    prompt: string;
-    images: string[];
-    quality?: "auto" | "low" | "medium" | "high" | "xhigh" | "max";
-    size?: string;
-    aspectRatio?: "1:1" | "3:4" | "9:16";
-    background?: "auto" | "opaque" | "transparent";
-    outputFormat?: "png" | "jpeg" | "webp";
-    outputCompression?: number;
-    moderation?: "auto" | "low";
-    timeoutMs?: number;
-    monitor?: AiMonitorContext;
-    signal?: AbortSignal;
-  }) {
-    const fields = {
-      model: input.model,
-      prompt: input.prompt,
-      size: resolveOpenAiSize(input),
-      ...(input.quality ? { quality: input.quality } : {}),
-      ...(input.background && input.background !== "auto" ? { background: input.background } : {}),
-      ...(input.outputFormat ? { output_format: input.outputFormat } : {}),
-      ...(typeof input.outputCompression === "number" && input.outputFormat !== "png" ? { output_compression: input.outputCompression } : {}),
-      ...(input.moderation ? { moderation: input.moderation } : {}),
-    };
-    const errors: string[] = [];
-
-    for (const imageFieldName of ["image[]", "image"] as const) {
-      try {
-        const payload = await this.requestMultipartJson<{
-          data?: Array<{ url?: string; b64_json?: string; revised_prompt?: string }>;
-        }>("/images/edits", fields, input.images, {
-          imageFieldName,
-          timeoutMs: input.timeoutMs ?? 120000,
-          monitor: input.monitor,
-          signal: input.signal,
-        });
-
-        return extractImageResult(payload);
-      } catch (error) {
-        errors.push(error instanceof Error ? error.message : "Unknown GPT Image multipart error");
-      }
-    }
-
-    throw new Error(`GPT Image multipart request failed: ${errors.join(" | ")}`);
-  }
-
   // The caller owns retries; never repeat an uncertain paid request or switch models.
-  async generateImageOnce(input: ImageGenerationRequest): Promise<ImageGenerationResult> {
+  async generateImageOnce(input: ImageGenerationRequest & { mask?: string }): Promise<ImageGenerationResult> {
+    const route = resolveImageModel(this.baseUrl, input.model, this.settings);
+    if (input.upstreamTask?.protocol === "evolink_tasks") route.protocol = "evolink_tasks";
+    const success = async (result: ImageGenerationResult) => { await this.settings.onImageSuccess?.(input.model, route); return result; };
+    if (route.protocol === "gemini_native" || route.protocol === "gemini_proxy") {
+      if (input.mask) throw new Error("当前 Gemini 图像接口不支持蒙版编辑。");
+      await input.beforeSubmit?.();
+      return success(await this.generateGeminiImageWithGoogleProtocol(input, route.protocol === "gemini_native"));
+    }
+    if (route.protocol === "evolink_tasks") {
+      // Never send credentials to the file host for an unverified/forwarding origin.
+      if (resolveImageProtocol(this.baseUrl) !== "evolink_tasks") throw new Error("异步图像协议与服务地址不匹配，请切回任务原服务。");
+      return success(await generateEvoLinkImage(input, (url, init, timeoutMs) => this.fetchRaw(url, init, undefined, timeoutMs, input.monitor, {
+        protocol: "evolink_tasks", model: new URL(url).origin === "https://files-api.evolink.ai" ? undefined : input.model, skipModelDispatch: new URL(url).origin === "https://files-api.evolink.ai",
+      }), route.contract));
+    }
+    if (input.upstreamTask) throw new Error("此任务需要原异步图像协议，请切回任务原服务后继续。");
     const form = new FormData();
+    if (input.mask) form.append("mask", dataUrlToBlob(input.mask), "mask.png");
     form.append("quality", input.quality ?? "auto");
     form.append("model", input.model);
     form.append("prompt", input.prompt);
@@ -1137,261 +1005,18 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
           body: JSON.stringify({ model: input.model, prompt: input.prompt, quality: input.quality ?? "auto", size: resolveOpenAiSize(input), n: 1, ...(input.background && input.background !== "auto" ? { background: input.background } : {}), ...(input.outputFormat ? { output_format: input.outputFormat } : {}), ...(typeof input.outputCompression === "number" && input.outputFormat !== "png" ? { output_compression: input.outputCompression } : {}), ...(input.moderation ? { moderation: input.moderation } : {}) }),
           signal: input.signal,
         };
+    await input.beforeSubmit?.();
     const response = await this.requestRaw(path, request, input.timeoutMs ?? 180000, input.monitor, { singleAttempt: true });
-    if (!response.ok) throw new Error(`Image request failed (${response.status}). Check API monitor; explicitly retry if needed.`);
-    return extractImageResult(JSON.parse(response.body));
+    if (!response.ok) throw Object.assign(new Error(response.status === 404 || response.status === 405
+      ? `图像接口 ${path} 不可用（${response.status}），请检查服务地址与图像协议。已暂停后续图片请求。`
+      : `Image request failed (${response.status}): ${response.body.slice(0, 1000)}`), { status: response.status, code: [404, 405].includes(response.status) ? "IMAGE_ENDPOINT_UNAVAILABLE" : "IMAGE_REQUEST_FAILED" });
+    return success(extractImageResult(JSON.parse(response.body)));
   }
 
   async generateImage(input: ImageGenerationRequest): Promise<ImageGenerationResult> {
-    const referenceImages = input.referenceImages ?? [];
-    let googleProtocolError: unknown = null;
-
-    if (isGeminiImageModel(input.model)) {
-      try {
-        return await this.generateGeminiImageWithGoogleProtocol({
-          model: input.model,
-          prompt: input.prompt,
-          referenceImages,
-          size: input.size,
-          aspectRatio: input.aspectRatio,
-          monitor: input.monitor,
-          signal: input.signal,
-        });
-      } catch (error) {
-        googleProtocolError = error;
-        if (!referenceImages.length) {
-          throw error;
-        }
-      }
-    }
-
-    if (referenceImages.length > 0) {
-      const referenceErrors: string[] = [];
-      if (googleProtocolError instanceof Error) {
-        referenceErrors.push(`Google protocol failed: ${googleProtocolError.message}`);
-      }
-
-      if (isOpenAiGptImageModel(input.model)) {
-        try {
-          return await this.generateOpenAiGptImageWithReferences({
-            model: input.model,
-            prompt: input.prompt,
-            images: referenceImages,
-            size: input.size,
-            aspectRatio: input.aspectRatio,
-            timeoutMs: input.timeoutMs,
-            monitor: input.monitor,
-            signal: input.signal,
-          });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Unknown GPT Image reference generation error";
-          throw new Error(`GPT Image reference generation via /images/edits failed: ${message}`);
-        }
-      }
-
-      const imageRefs = toImageRefs(referenceImages);
-
-      for (const attempt of [
-        {
-          path: "/images/edits",
-          body: {
-            model: input.model,
-            prompt: input.prompt,
-            size: resolveOpenAiSize(input),
-            images: imageRefs,
-          },
-        },
-        {
-          path: "/images/edits",
-          body: {
-            model: input.model,
-            prompt: input.prompt,
-            size: resolveOpenAiSize(input),
-            images: imageRefs,
-            input_fidelity: "high",
-          },
-        },
-        {
-          path: "/images/generations",
-          body: {
-            model: input.model,
-            prompt: input.prompt,
-            size: resolveOpenAiSize(input),
-            reference_images: imageRefs,
-          },
-        },
-        {
-          path: "/images/generations",
-          body: {
-            model: input.model,
-            prompt: input.prompt,
-            size: resolveOpenAiSize(input),
-            input_images: imageRefs,
-          },
-        },
-      ]) {
-        try {
-          const payload = await this.requestJson<{
-            data?: Array<{ url?: string; b64_json?: string; revised_prompt?: string }>;
-          }>(attempt.path, {
-            method: "POST",
-            body: JSON.stringify(attempt.body),
-            signal: input.signal,
-          }, input.timeoutMs ?? 120000, input.monitor);
-
-          return extractImageResult(payload);
-        } catch (error) {
-          referenceErrors.push(error instanceof Error ? error.message : "Unknown reference image generation error");
-        }
-      }
-
-      throw new Error(`Reference-guided image generation failed: ${referenceErrors.join(" | ")}`);
-    }
-
-    try {
-      const payload = await this.requestJson<{
-        data?: Array<{ url?: string; b64_json?: string; revised_prompt?: string }>;
-      }>("/images/generations", {
-        method: "POST",
-        body: JSON.stringify({
-          model: input.model,
-          prompt: input.prompt,
-          size: resolveOpenAiSize(input),
-        }),
-        signal: input.signal,
-      }, input.timeoutMs ?? 120000, input.monitor);
-
-      return extractImageResult(payload);
-    } catch (error) {
-      if (!isGeminiImageModel(input.model)) {
-        throw error;
-      }
-
-      return this.generateGeminiImageWithGoogleProtocol({
-        model: input.model,
-        prompt: input.prompt,
-        size: input.size,
-        aspectRatio: input.aspectRatio,
-        monitor: input.monitor,
-        signal: input.signal,
-      });
-    }
+    return this.generateImageOnce(input);
   }
-
   async editImage(input: ImageEditRequest): Promise<ImageGenerationResult> {
-    const imageRefs = toImageRefs([input.image, ...(input.referenceImages ?? [])]);
-    let googleProtocolError: unknown = null;
-    if (isGeminiImageModel(input.model)) {
-      try {
-        return await this.generateGeminiImageWithGoogleProtocol({
-          model: input.model,
-          prompt: input.prompt,
-          baseImage: input.image,
-          referenceImages: input.referenceImages,
-          size: input.size,
-          aspectRatio: input.aspectRatio,
-          monitor: input.monitor,
-          signal: input.signal,
-        });
-      } catch (error) {
-        googleProtocolError = error;
-        // Fall through to compatibility attempts for providers that proxy Gemini image models via OpenAI image APIs.
-      }
-    }
-
-    if (isOpenAiGptImageModel(input.model)) {
-      try {
-        return await this.generateOpenAiGptImageWithReferences({
-          model: input.model,
-          prompt: input.prompt,
-          images: [input.image, ...(input.referenceImages ?? [])],
-          quality: input.quality,
-          size: input.size,
-          aspectRatio: input.aspectRatio,
-          timeoutMs: input.timeoutMs,
-          monitor: input.monitor,
-          signal: input.signal,
-        });
-      } catch {
-        // Fall through to JSON compatibility attempts for third-party gateways.
-      }
-    }
-
-    const attempts = [
-      {
-        path: "/images/edits",
-        body: {
-          model: input.model,
-          prompt: input.prompt,
-          size: resolveOpenAiSize(input),
-          ...(input.quality ? { quality: input.quality } : {}),
-          images: imageRefs,
-          ...(input.mask ? { mask: toMaskRef(input.mask) } : {}),
-        },
-      },
-      {
-        path: "/images/edits",
-        body: {
-          model: input.model,
-          prompt: input.prompt,
-          size: resolveOpenAiSize(input),
-          ...(input.quality ? { quality: input.quality } : {}),
-          images: imageRefs,
-          input_fidelity: "high",
-          ...(input.mask ? { mask: toMaskRef(input.mask) } : {}),
-        },
-      },
-      {
-        path: "/images/generations",
-        body: {
-          model: input.model,
-          prompt: input.prompt,
-          size: resolveOpenAiSize(input),
-          ...(input.quality ? { quality: input.quality } : {}),
-          reference_images: imageRefs,
-          ...(input.mask ? { mask: toMaskRef(input.mask) } : {}),
-        },
-      },
-    ];
-
-    const errors: string[] = [];
-
-    for (const attempt of attempts) {
-      try {
-        const payload = await this.requestJson<{
-          data?: Array<{ url?: string; b64_json?: string; revised_prompt?: string }>;
-        }>(attempt.path, {
-          method: "POST",
-          body: JSON.stringify(attempt.body),
-          signal: input.signal,
-        }, input.timeoutMs ?? 120000, input.monitor);
-
-        return extractImageResult(payload);
-      } catch (error) {
-        errors.push(error instanceof Error ? error.message : "Unknown image edit error");
-      }
-    }
-
-    if (isGeminiImageModel(input.model)) {
-      errors.unshift(
-        googleProtocolError instanceof Error
-          ? `Google protocol image edit failed: ${googleProtocolError.message}`
-          : "Google protocol image edit attempt did not complete successfully",
-      );
-    }
-
-    throw new Error(`Base64 image edit failed: ${errors.join(" | ")}`);
+    return this.generateImageOnce({ ...input, referenceImages: [input.image, ...(input.referenceImages || [])] });
   }
-}
-
-export function parseProviderError(error: unknown) {
-  if (error instanceof z.ZodError) {
-    return error.flatten();
-  }
-
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return "Unknown provider error";
 }

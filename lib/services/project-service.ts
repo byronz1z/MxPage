@@ -1,20 +1,21 @@
 import { HERO_MAX, DETAIL_MAX } from "@/lib/utils/image-counts";
-import fs from "fs/promises";
-import path from "path";
+import { createHash } from "crypto";
 
 import { prisma } from "@/lib/db/prisma";
 import { assertNoDetailRun } from "@/lib/detail-runs/lock";
 import { patchProjectModelSnapshot } from "@/lib/services/project-model-snapshot-service";
 import { assetPublicUrl, deleteAssetRecord } from "@/lib/storage/asset-manager";
-import { env } from "@/lib/utils/env";
+import { visibleProjectsWhere } from "./project-visibility";
+import { isTrashed, trashProject } from "./recycle-bin";
+import { thumbnailUrl } from "@/lib/utils/thumbnail";
 
 function readPreviewConfig(snapshot: unknown) {
   const data = (snapshot as Record<string, unknown> | null) ?? {};
   const previewConfig = (data.previewConfig as Record<string, unknown> | null) ?? {};
 
   return {
-    heroImageCount: Math.min(HERO_MAX, Math.max(1, Number(previewConfig.heroImageCount ?? 4))),
-    detailSectionCount: Math.min(DETAIL_MAX, Math.max(1, Number(previewConfig.detailSectionCount ?? 6))),
+    heroImageCount: Math.min(HERO_MAX, Math.max(0, Number(previewConfig.heroImageCount ?? 4))),
+    detailSectionCount: Math.min(DETAIL_MAX, Math.max(0, Number(previewConfig.detailSectionCount ?? 6))),
   };
 }
 
@@ -100,20 +101,21 @@ async function pruneProjectToPreviewConfig(projectId: string, snapshot: unknown)
 
 export async function listProjects() {
   const projects = await prisma.project.findMany({
-    where: { platform: { not: "__mxpage_system_task__" } },
+    where: await visibleProjectsWhere(prisma),
     orderBy: { updatedAt: "desc" },
     include: {
       assets: {
         orderBy: { sortOrder: "asc" },
         take: 1,
       },
-      sections: true,
+      sections: { orderBy: [{ order: "asc" }, { id: "asc" }], include: { currentImageAsset: { select: { id: true, filePath: true } } } },
     },
   });
 
   return projects.map((project) => ({
     ...project,
-    coverImageUrl: assetPublicUrl(project.assets[0]),
+    coverImageUrl: assetPublicUrl(project.sections.find(section => section.currentImageAsset)?.currentImageAsset ?? project.assets[0]),
+    coverThumbnailUrl: thumbnailUrl(project.sections.find(section => section.currentImageAsset)?.currentImageAsset ?? project.assets[0]),
     sectionCount: project.sections.length,
   }));
 }
@@ -123,7 +125,16 @@ export async function createProject(input: {
   platform: string;
   style: string;
   description?: string | null;
+  translationUpload?: { batchId: string; groupIndex: number };
 }) {
+  if (input.translationUpload) {
+    const { translationUpload, ...data } = input;
+    const id = `translation-upload-${createHash("sha256").update(`${translationUpload.batchId}:${translationUpload.groupIndex}`).digest("hex").slice(0, 32)}`;
+    const fingerprint = createHash("sha256").update(JSON.stringify(data)).digest("hex");
+    const project = await prisma.project.upsert({ where: { id }, create: { ...data, id, modelSnapshot: { workType: "translation", translationBatchId: translationUpload.batchId, uploadFingerprint: fingerprint } }, update: {} });
+    if ((project.modelSnapshot as { uploadFingerprint?: string })?.uploadFingerprint !== fingerprint) throw new Error("同一上传标识不能用于不同项目，请重新提交。");
+    return project;
+  }
   return prisma.project.create({
     data: input,
   });
@@ -154,7 +165,7 @@ export async function getProjectDetail(projectId: string) {
     },
   });
 
-  if (!project) {
+  if (!project || isTrashed(project.modelSnapshot)) {
     return null;
   }
 
@@ -194,25 +205,5 @@ export async function updateProject(projectId: string, input: Record<string, unk
 }
 
 export async function deleteProject(projectId: string) {
-  await assertNoDetailRun(projectId);
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
-  });
-
-  if (!project) {
-    return null;
-  }
-
-  await prisma.project.delete({
-    where: { id: projectId },
-  });
-
-  const storageRoot = path.resolve(process.cwd(), env.STORAGE_ROOT);
-  await Promise.all([
-    fs.rm(path.join(storageRoot, "uploads", projectId), { recursive: true, force: true }),
-    fs.rm(path.join(storageRoot, "generated", projectId), { recursive: true, force: true }),
-    fs.rm(path.join(storageRoot, "exports", projectId), { recursive: true, force: true }),
-  ]);
-
-  return project;
+  return trashProject(projectId);
 }

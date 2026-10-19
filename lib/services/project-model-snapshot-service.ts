@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
+import { previewImageCountsSchema } from "@/lib/validations/project";
 
 const maxSnapshotUpdateAttempts = 5;
 
@@ -39,6 +40,10 @@ export async function patchProjectModelSnapshot(projectId: string, patch: unknow
     }
 
     const mergedSnapshot = mergeSnapshotValue(current.modelSnapshot, snapshotPatch) as Prisma.InputJsonValue;
+    if ("previewConfig" in snapshotPatch) {
+      // Check merged values on every compare-and-swap attempt, including partial patches.
+      previewImageCountsSchema.parse(asRecord(asRecord(mergedSnapshot).previewConfig));
+    }
     const nextUpdatedAt = new Date(Math.max(Date.now(), current.updatedAt.getTime() + 1));
     const result = await prisma.project.updateMany({
       where: {

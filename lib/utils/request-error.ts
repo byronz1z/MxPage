@@ -16,6 +16,7 @@ export function isStructuredSchemaRejection(error: unknown) {
 // Keep field-level business feedback, but never render SDK bodies, HTML or stacks.
 export function requestErrorMessage(error: unknown, fallback = "操作暂未完成，请稍后重试。已有结果不会被清除。") {
   const value = error as { code?: string; message?: string } | null;
+  if (value?.code === "IMAGE_TASK_PENDING") return "图片结果查询暂未完成，上游任务编号已保存。继续任务只查询原结果，不会重新提交生图。";
   if (value?.code === "P2025") return "该项目或任务已不存在，请返回我的作品。";
   if (value?.code === "ENOENT") return "所需素材文件已不存在，请重新上传素材后继续。";
   if (error instanceof ZodError) return "返回的数据格式不完整，当前步骤已暂停，已有结果已保留。";

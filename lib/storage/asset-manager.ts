@@ -1,5 +1,6 @@
 import fs from "fs/promises";
 import path from "path";
+import { createHash } from "crypto";
 
 import type { AssetType, ProductAsset } from "@prisma/client";
 import { nanoid } from "nanoid";
@@ -38,9 +39,22 @@ export async function saveUploadAsset(params: {
   sortOrder: number;
   isMain?: boolean;
   purpose?: "product_identity" | "style_reference";
+  uploadKey?: string;
+  maxExistingBytes?: number;
+  maxTotalBytes?: number;
 }) {
+  const id = params.uploadKey ? `upload-${createHash("sha256").update(`${params.projectId}:${params.uploadKey}`).digest("hex")}` : undefined;
+  const uploadFingerprint = id ? createHash("sha256").update(JSON.stringify([params.fileName, params.mimeType, params.type, params.purpose])).update(params.fileBuffer).digest("hex") : undefined;
+  if (id) {
+    const existing = await prisma.productAsset.findUnique({ where: { id } });
+    if (existing) {
+      if ((existing.metadata as { uploadFingerprint?: string })?.uploadFingerprint !== uploadFingerprint) throw new Error("同一上传标识不能用于不同图片。");
+      return existing;
+    }
+  }
+  if (params.maxTotalBytes && (params.maxExistingBytes || 0) + params.fileBuffer.length > params.maxTotalBytes) throw new Error("每套原图总量不能超过 300MB，请分批上传。");
   await ensureStorageScaffold();
-  const safeName = `${Date.now()}-${nanoid(6)}-${sanitizeFileName(params.fileName)}`;
+  const safeName = `${id || `${Date.now()}-${nanoid(6)}`}-${sanitizeFileName(params.fileName)}`;
   const dir = projectDir(params.projectId, "uploads");
   await ensureDir(dir);
   const relativePath = path.join("uploads", params.projectId, safeName);
@@ -48,6 +62,7 @@ export async function saveUploadAsset(params: {
 
   return prisma.productAsset.create({
     data: {
+      ...(id ? { id } : {}),
       projectId: params.projectId,
       type: params.type,
       filePath: relativePath,
@@ -57,6 +72,7 @@ export async function saveUploadAsset(params: {
       isMain: params.isMain ?? false,
       metadata: {
         bytes: params.fileBuffer.byteLength,
+        ...(uploadFingerprint ? { uploadFingerprint } : {}),
         ...(params.purpose ? { purpose: params.purpose } : {}),
       },
     },
@@ -65,7 +81,7 @@ export async function saveUploadAsset(params: {
 
 export async function saveGeneratedImage(params: {
   projectId: string;
-  sectionId: string;
+  sectionId: string | null;
   prompt: string;
   source: {
     url?: string | null;
@@ -76,14 +92,14 @@ export async function saveGeneratedImage(params: {
   metadata?: Record<string, unknown>;
 }) {
   await ensureStorageScaffold();
-  const dir = projectDir(params.projectId, "generated", params.sectionId);
+  const dir = projectDir(params.projectId, "generated", params.sectionId ?? "standalone");
   await ensureDir(dir);
 
   const mimeType =
     params.source.svgText ? "image/svg+xml" : params.source.mimeType ?? "image/png";
   const ext = extFromMime(mimeType);
   const fileName = `${Date.now()}-${nanoid(6)}.${ext}`;
-  const relativePath = path.join("generated", params.projectId, params.sectionId, fileName);
+  const relativePath = path.join("generated", params.projectId, params.sectionId ?? "standalone", fileName);
   const absolutePath = path.join(rootDir(), relativePath);
 
   if (params.source.svgText) {

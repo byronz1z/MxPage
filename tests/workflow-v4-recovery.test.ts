@@ -19,7 +19,7 @@ let leases: typeof import("../lib/detail-runs/run-lease");
 let png: Buffer;
 const credentials = { apiKey: "isolated-v4-test-key", baseUrl: "https://workflow.test/v1" };
 const originalFetch = globalThis.fetch;
-type Call = { kind: "PLAN" | "PLAN_CONTENT_REPAIR" | "INPUT_SUGGESTIONS" | "ART_DIRECTION" | "GENERATE" | "IMAGE_REVIEW" | "SET_REVIEW"; input: any; index?: number; body: any; url: string };
+type Call = { kind: "PLAN" | "PLAN_CONTENT_REPAIR" | "INPUT_SUGGESTIONS" | "ART_DIRECTION" | "GENERATE" | "IMAGE_REVIEW" | "SET_REVIEW"; input: any; index?: number; body: any; url: string; signal?: AbortSignal | null };
 let calls: Call[] = [];
 let respond: (call: Call) => Promise<Response>;
 let inFlight = 0, peak = 0;
@@ -42,7 +42,7 @@ function deferred() {
 }
 function plan(heroes = 3, details = 4) {
   return { productName: "Tea cup", category: "Home", facts: ["Brown cup"], requirements: [], missingFields: [],
-    contentCoverage: ["need", "selling_points", "scenarios", "details", "specifications", "trust", "usage", "closing"].map(module => ({ module, status: "covered", sectionIndexes: [heroes], reason: "Confirmed copy" })),
+    contentCoverage: ["need", "selling_points", "scenarios", "details", "specifications", "trust", "usage", "closing"].map(module => ({ module, status: "covered", sectionIndexes: [details ? heroes : 0], reason: "Confirmed copy" })),
     sections: Array.from({ length: heroes + details }, (_, index) => ({ kind: index < heroes ? "HERO" : "DETAIL", title: `Section ${index}`, objective: "Show original product faithfully", buyerQuestion: "What is it?", copy: `Original copy ${index}`, evidence: ["user_description"] })),
   };
 }
@@ -131,27 +131,44 @@ before(async () => {
   leases = await import("../lib/detail-runs/run-lease");
   png = await sharp({ create: { width: 32, height: 48, channels: 3, background: "#c4ad89" } }).png().toBuffer();
   await db.providerConfig.create({ data: { name: "Isolated V4", baseUrl: credentials.baseUrl, apiKeyEncrypted: "unused", isActive: true, models: { create: [
-    { modelId: "gpt-6-luna", label: "Luna", capabilities: { text: true, structured_output: true }, roles: {}, isDefaultPlanning: true },
-    { modelId: "gpt-image-2.5-flare", label: "Flare", capabilities: { image_edit: true }, roles: {}, isDefaultDetailImage: true, isDefaultImageEdit: true },
+    { modelId: "gpt-6-luna", label: "Luna", capabilities: { text: true, vision: true, structured_output: true }, roles: {}, isDefaultPlanning: true, isDefaultAnalysis: true },
+    { modelId: "gpt-image-2.5-flare", label: "Flare", capabilities: { image_edit: true, image_gen: true }, roles: {}, isDefaultHeroImage: true, isDefaultDetailImage: true, isDefaultImageEdit: true },
   ] } } });
   globalThis.fetch = async (url, init) => {
     assert.ok(String(url).startsWith(credentials.baseUrl), "Never contact a live provider");
     let call: Call;
     if (init?.body instanceof FormData) {
       const body = init.body;
-      assert.equal(body.get("model"), "gpt-image-2.5-flare"); assert.equal(body.get("quality"), "low");
+      assert.ok(["gpt-image-2.5-flare", "image-B"].includes(String(body.get("model")))); assert.equal(body.get("quality"), "low");
       call = { kind: "GENERATE", index: Number(String(body.get("prompt")).match(/Image-(\d+)/)?.[1]), input: null, body, url: String(url) };
+    } else if (String(url).endsWith("/images/generations")) {
+      const body = JSON.parse(String(init?.body));
+      assert.equal(body.model, "gpt-image-2.5-flare");
+      assert.equal(body.quality, "low");
+      call = { kind: "GENERATE", index: Number(body.prompt.match(/Image-(\d+)/)?.[1]), input: null, body, url: String(url) };
     } else {
       const body = JSON.parse(String(init?.body));
-      assert.equal(body.model, "gpt-6-luna"); assert.equal(body.tools, undefined); assert.equal(body.response_format.type, "json_schema");
+      if (String(url).endsWith("/responses")) {
+        body.messages = [{ role: "system", content: body.instructions }, { role: "user", content: [{ type: "text", text: body.input[0].content[0].text }] }];
+        body.response_format = { type: "json_schema", json_schema: body.text.format };
+      }
+      assert.ok(["gpt-6-luna", "text-B", "vision-B"].includes(body.model)); assert.equal(body.tools, undefined); assert.equal(body.response_format.type, "json_schema");
       assertStrictResponseSchema(body.response_format.json_schema.schema);
       const system = body.messages[0].content;
-      const kind = system.includes("商品补充候选模型") ? "INPUT_SUGGESTIONS" : system.includes("内容安排修复模型") ? "PLAN_CONTENT_REPAIR" : system.includes("商品规划模型") ? "PLAN" : system.includes("视觉分镜模型") ? "ART_DIRECTION" : system.includes("整套页面检查模型") ? "SET_REVIEW" : "IMAGE_REVIEW";
+      const kind = system.includes("商品补充候选模型") ? "INPUT_SUGGESTIONS" : system.includes("内容安排修复模型") ? "PLAN_CONTENT_REPAIR" : /商品规划模型|小红书图文规划模型/.test(system) ? "PLAN" : system.includes("视觉分镜模型") ? "ART_DIRECTION" : system.includes("整套页面检查模型") ? "SET_REVIEW" : "IMAGE_REVIEW";
       call = { kind, input: JSON.parse(body.messages[1].content[0].text), body, url: String(url) };
     }
+    call.signal = init?.signal;
     calls.push(call);
     if (call.kind === "GENERATE") { inFlight++; peak = Math.max(peak, inFlight); }
-    try { return await respond(call); } finally { if (call.kind === "GENERATE") inFlight--; }
+    try {
+      const response = await respond(call);
+      if (String(url).endsWith("/responses") && response.ok) {
+        const chat = await response.json();
+        return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: chat.choices[0].message.content }] }] });
+      }
+      return response;
+    } finally { if (call.kind === "GENERATE") inFlight--; }
   };
 });
 beforeEach(() => { calls = []; peak = 0; respond = success; });
@@ -161,7 +178,116 @@ after(async () => {
   if (directory && path.dirname(directory) === path.resolve(tmpdir()) && path.basename(directory).startsWith("mxpage-v4-recovery-test-")) await rm(directory, { recursive: true, force: true });
 });
 
-test("new V4 run sends one plan, storyboard, generation/review per image and set review; completed resume is a no-op", async () => {
+for (const [heroCount, detailCount] of [[3, 0], [0, 1], [0, 4], [1, 0]]) test(`single-type creation ${heroCount}+${detailCount} preserves zero counts on replay`, async () => {
+  const projectId = await project();
+  const input = { idempotencyKey: randomUUID(), heroCount, detailCount, mode: "create", quality: "low" };
+  const run = await runtime.runWithProviderCredentials(credentials, () => service.createV4DetailRun(projectId, input, credentials));
+  const completed = await settled(run!.id);
+  assert.equal(completed.status, "COMPLETED");
+  assert.equal((completed.input as any).heroCount, heroCount);
+  assert.equal((completed.input as any).detailCount, detailCount);
+  const sections = await db.pageSection.findMany({ where: { projectId } });
+  assert.equal(sections.length, heroCount + detailCount);
+  assert.equal(sections.filter(section => section.type === "HERO").length, heroCount);
+  assert.ok(sections.every(section => section.currentImageAssetId));
+  assert.deepEqual([count("PLAN"), count("ART_DIRECTION"), count("GENERATE"), count("IMAGE_REVIEW"), count("SET_REVIEW")], [1, 1, heroCount + detailCount, heroCount + detailCount, 1]);
+  assert.deepEqual(cpOf(completed).contentWarnings, []);
+  assert.equal(calls.find(call => call.kind === "PLAN")?.input.requestedHeroCount, heroCount);
+  assert.equal(calls.find(call => call.kind === "PLAN")?.input.requestedDetailCount, detailCount);
+  const countBefore = calls.length;
+  const duplicate = await runtime.runWithProviderCredentials(credentials, () => service.createV4DetailRun(projectId, input, credentials));
+  assert.equal(duplicate!.id, run!.id);
+  await resume(projectId, run!.id);
+  assert.equal(calls.length, countBefore);
+});
+
+test("XHS freezes the requested single portrait card, saves post copy and resumes without resubmission", async () => {
+  const project = await db.project.create({ data: { name: "XHS acceptance", description: "桌面整理，只生成1张图", platform: "xiaohongshu", style: "generic_clean" } });
+  const post = { title: "桌面留白", caption: "收好线材，归位文具，留出工作区。", hashtags: ["桌面整理", "生活", "收纳"], language: "zh-CN" };
+  respond = async call => call.kind === "PLAN" ? completion({ ...plan(0, 1), contentCoverage: [], post }) : success(call);
+  const input = { mode: "xhs", idempotencyKey: randomUUID(), quality: "low" };
+  const run = await runtime.runWithProviderCredentials(credentials, () => service.createV4DetailRun(project.id, input, credentials));
+  const completed = await settled(run!.id);
+  assert.equal(completed.status, "COMPLETED");
+  assert.deepEqual([(completed.input as any).heroCount, (completed.input as any).detailCount], [0, 1]);
+  const savedProject = await db.project.findUniqueOrThrow({ where: { id: project.id } });
+  assert.deepEqual((savedProject.modelSnapshot as any).socialPost, post);
+  assert.deepEqual(cpOf(completed).contentWarnings, []);
+  assert.equal(count("GENERATE"), 1);
+  const request = calls.find(c => c.kind === "GENERATE")!;
+  const [width, height] = request.body.size.split("x").map(Number);
+  assert.equal(width / height, 3 / 4);
+  const before = calls.length;
+  await db.project.update({ where: { id: project.id }, data: { description: "改成8张" } });
+  await runtime.runWithProviderCredentials(credentials, () => service.createV4DetailRun(project.id, input, credentials));
+  await resume(project.id, run!.id);
+  assert.equal(calls.length, before);
+});
+
+test("XHS defaults and count bounds are resolved locally before model calls", async () => {
+  const { xhsImageCount } = await import("../lib/detail-runs/xhs");
+  assert.equal(xhsImageCount({}, "做一篇收纳图文"), 5);
+  assert.equal(xhsImageCount({}, "只做一张图"), 1);
+  assert.equal(xhsImageCount({ heroCount: 1, detailCount: 0 }, "主题"), 1);
+  for (const brief of ["9张", "10张", "0张", "做1张或者3张"]) assert.throws(() => xhsImageCount({}, brief));
+  const p = await db.project.create({ data: { name: "Invalid social count", description: "只做10张", platform: "xiaohongshu", style: "generic_clean" } });
+  await assert.rejects(runtime.runWithProviderCredentials(credentials, () => service.createV4DetailRun(p.id, { mode: "xhs", idempotencyKey: randomUUID() }, credentials)), /1–8/);
+  assert.equal(calls.length, 0);
+  assert.equal(await db.detailRun.count({ where: { projectId: p.id } }), 0);
+});
+
+test("empty single, batch, planner and Agent requests are rejected before dispatch", async () => {
+  const projectId = await project();
+  const input = { idempotencyKey: randomUUID(), heroCount: 0, detailCount: 0 };
+  await assert.rejects(service.createV4DetailRun(projectId, input, credentials), /不能同时为 0/);
+  const { startBatch, batchInputSchema } = await import("../lib/detail-runs/batch");
+  await assert.rejects(startBatch({ id: randomUUID(), projectIds: [projectId], options: { heroCount: 0, detailCount: 0 } }, credentials), /不能同时为 0/);
+  assert.equal(batchInputSchema.safeParse({ id: randomUUID(), projectIds: [projectId], options: { heroCount: 0, detailCount: 1 } }).success, true);
+  const { workspaceTools } = await import("../lib/agent/tools");
+  const tool = workspaceTools().find(tool => tool.name === "create_detail_page")!;
+  const toolInput = { projectId, mode: "create", instruction: "", heroCount: 0, detailCount: 0 };
+  assert.equal((tool.schema as any).safeParse(toolInput).success, false);
+  assert.equal((tool.schema as any).safeParse({ ...toolInput, detailCount: 1 }).success, true);
+  await assert.rejects(tool.invoke(toolInput));
+  const { POST } = await import("../app/api/projects/[id]/plan-sections/route");
+  const { NextRequest } = await import("next/server");
+  const response = await POST(new NextRequest("http://localhost/api/projects/test/plan-sections", { method: "POST", body: JSON.stringify({ previewConfig: { heroImageCount: 0, detailSectionCount: 0, imageAspectRatio: "3:4", contentLanguage: "zh-CN" } }) }), { params: { id: projectId } });
+  assert.equal(response.status, 400);
+  assert.equal(await db.detailRun.count({ where: { projectId } }), 0);
+  assert.equal(await db.generationTask.count({ where: { projectId } }), 0);
+  assert.equal(calls.length, 0);
+});
+
+test("saved count patches preserve zeros and cannot jointly clear all output", async () => {
+  const projectId = await project();
+  const { patchProjectModelSnapshot } = await import("../lib/services/project-model-snapshot-service");
+  const { updateProject } = await import("../lib/services/project-service");
+  await patchProjectModelSnapshot(projectId, { previewConfig: { heroImageCount: 0, detailSectionCount: 2 } });
+  await assert.rejects(updateProject(projectId, { modelSnapshot: { previewConfig: { detailSectionCount: 0 } } }), /不能同时为 0/);
+  assert.deepEqual((await db.project.findUniqueOrThrow({ where: { id: projectId } })).modelSnapshot, { previewConfig: { heroImageCount: 0, detailSectionCount: 2 } });
+  await patchProjectModelSnapshot(projectId, { previewConfig: { heroImageCount: 3, detailSectionCount: 4 } });
+  const changes = await Promise.allSettled([
+    patchProjectModelSnapshot(projectId, { previewConfig: { heroImageCount: 0 } }),
+    patchProjectModelSnapshot(projectId, { previewConfig: { detailSectionCount: 0 } }),
+  ]);
+  assert.equal(changes.filter(result => result.status === "fulfilled").length, 1);
+  const saved = (await db.project.findUniqueOrThrow({ where: { id: projectId } })).modelSnapshot as any;
+  assert.ok(saved.previewConfig.heroImageCount + saved.previewConfig.detailSectionCount > 0);
+  assert.equal(calls.length, 0);
+});
+
+test("new V4 run sends one plan, storyboard, generation/review per image and set review; completed resume is a no-op", async t => {
+  const deadlines = new WeakMap<AbortSignal, number>();
+  const timeout = AbortSignal.timeout.bind(AbortSignal);
+  t.mock.method(AbortSignal, "timeout", (ms: number) => { const signal = timeout(ms); deadlines.set(signal, ms); return signal; });
+  respond = async call => {
+    if (call.kind === "PLAN") assert.equal(deadlines.get(call.signal!), 180000, "Planning waits for the complete response beyond the former 60-second cutoff");
+    // Either request can reach fetch first; hold both until the pair has started.
+    if (call.kind === "GENERATE" && [1, 2].includes(call.index!)) {
+      await until(() => [1, 2].every(index => calls.some(other => other.kind === "GENERATE" && other.index === index)));
+    }
+    return success(call);
+  };
   const { projectId, runId, input } = await start();
   const run = await settled(runId);
   assert.equal(run.status, "COMPLETED"); assert.equal(cpOf(run).workflowVersion, 4);
@@ -525,6 +651,34 @@ test("old waiting tasks upgrade suggestions explicitly and concurrent clicks reu
   assert.equal(count("INPUT_SUGGESTIONS"), 1);
 });
 
+test("saved shared-unit candidates clear stale diagnostics without paid refresh and submit only once", async () => {
+  const fixture = await startQuestionCards();
+  const saved = cpOf(await db.detailRun.findUniqueOrThrow({ where: { id: fixture.runId } }));
+  saved.plan!.missingFields[0] = { field: "尺码与成衣尺寸", question: "成衣胸围、衣长，单位为cm，均为约值。", blocking: true, options: ["S：104/70；M：110/72", "S：108/72；M：114/74", "S：112/74；M：118/76"] };
+  saved.questions![0] = { text: saved.plan!.missingFields[0].question, fields: ["尺码与成衣尺寸"], options: saved.plan!.missingFields[0].options, blocking: true, requiresImage: false };
+  saved.supplementalQuestionIssue = "旧校验误报：候选缺少尺寸单位";
+  saved.requests!.INPUT_SUGGESTIONS = { state: "completed", requestId: "already-paid-suggestions" };
+  await saveCheckpoint(fixture.runId, saved);
+  const before = await db.detailRun.findUniqueOrThrow({ where: { id: fixture.runId } });
+  const read = await service.getV4DetailRun(fixture.projectId, fixture.runId);
+  assert.equal(cpOf(read!).supplementalQuestionIssue, undefined);
+  assert.deepEqual((await db.detailRun.findUniqueOrThrow({ where: { id: fixture.runId } })).checkpoint, before.checkpoint, "GET does not rewrite history");
+  await service.controlV4DetailRun(fixture.projectId, fixture.runId, "suggestions", {}, credentials);
+  assert.equal(count("INPUT_SUGGESTIONS"), 0); assert.equal(count("PLAN"), 1);
+  const questions = normalizeSupplementalQuestions(cpOf(read!).questions);
+  const payload = buildSupplementalSubmission(questions, fixture.selections)!;
+  assert.ok(payload);
+  await service.controlV4DetailRun(fixture.projectId, fixture.runId, "answers", payload, credentials);
+  const completed = await settled(fixture.runId);
+  assert.equal(completed.status, "COMPLETED");
+  assert.equal(cpOf(completed).confirmedSupplementalAnswers![0].answer, "S：104/70；M：110/72（单位：cm）");
+  assert.equal(cpOf(completed).confirmedSupplementalAnswers![0].basis, "model_estimate");
+  assert.equal(count("INPUT_SUGGESTIONS"), 0);
+  const requests = calls.length;
+  await service.controlV4DetailRun(fixture.projectId, fixture.runId, "answers", payload, credentials);
+  assert.equal(calls.length, requests);
+});
+
 test("suggestion timeout preserves the paid plan and requires explicit uncertain retry", async () => {
   const value = plan(); value.missingFields = [{ field: "purpose", question: "具体用途？", blocking: true }] as any;
   respond = async call => call.kind === "PLAN" ? completion(value) : call.kind === "INPUT_SUGGESTIONS" ? Response.json({ error: { message: "Gateway timeout" } }, { status: 504 }) : success(call);
@@ -589,6 +743,46 @@ test("a timed-out image is not automatically retried; siblings finish and explic
   assert.equal(count("GENERATE"), 5);
   await resume(fixture.projectId, fixture.runId, true);
   assert.equal(count("GENERATE"), 5, "One explicit image retry cannot turn into repeated paid requests");
+});
+
+test("missing image endpoint stops the batch after its first request and preserves the plan", async () => {
+  const fixture = await seed();
+  respond = async call => call.kind === "GENERATE" ? Response.json({ error: "Invalid URL" }, { status: 404 }) : success(call);
+  const failed = await resume(fixture.projectId, fixture.runId);
+  assert.equal(failed.status, "FAILED"); assert.equal(count("GENERATE"), 1);
+  assert.equal(count("PLAN"), 0); assert.equal(count("ART_DIRECTION"), 0);
+  assert.equal(count("IMAGE_REVIEW"), 0);
+  assert.ok(cpOf(failed).plan); assert.ok(cpOf(failed).artDirection);
+  assert.match(failed.error!, /images\/edits/);
+  assert.doesNotMatch(failed.error!, /Responses/);
+});
+
+test("async image checkpoint survives poll failure; resume queries the original task without retry consent", async t => {
+  const fixture = await seed({ generated: [1, 2, 3, 4, 5, 6], checked: true });
+  const { OpenAICompatibleAdapter } = await import("../lib/ai/adapters/openai-compatible");
+  let dispatches = 0, failPoll = true;
+  t.mock.method(OpenAICompatibleAdapter.prototype, "generateImageOnce", async (input: import("../lib/ai/provider-client").ImageGenerationRequest) => {
+    if (!input.upstreamTask) {
+      await input.beforeSubmit?.(); dispatches++;
+      await input.onUpstreamTask!({ protocol: "evolink_tasks", id: "saved-upstream-task", status: "pending" });
+    } else assert.equal(input.upstreamTask.id, "saved-upstream-task");
+    if (failPoll) throw new Error("poll disconnected");
+    await input.onUpstreamTask!({ protocol: "evolink_tasks", id: "saved-upstream-task", status: "completed" });
+    return { b64Json: png.toString("base64") };
+  });
+  const partial = await resume(fixture.projectId, fixture.runId);
+  const key = `GENERATE:${fixture.checkpoint.images[0].sectionId}`;
+  assert.equal(cpOf(partial).requests![key].upstreamTask?.id, "saved-upstream-task");
+  const requestId = cpOf(partial).requests![key].requestId;
+  await resume(fixture.projectId, fixture.runId, true);
+  assert.equal(dispatches, 1, "even retry consent must query a known pending task first");
+  failPoll = false;
+  const completed = await resume(fixture.projectId, fixture.runId);
+  assert.equal(completed.status, "COMPLETED"); assert.equal(dispatches, 1);
+  assert.equal(cpOf(completed).attempts[key], 1);
+  assert.equal(cpOf(completed).requests![key].requestId, requestId);
+  assert.equal(cpOf(completed).images[0].correctionCount, 0);
+  assert.equal(count("PLAN"), 0); assert.equal(count("ART_DIRECTION"), 0);
 });
 
 test("asset persisted before checkpoint is recovered without another generation", async () => {
@@ -864,4 +1058,35 @@ test("stale group results cannot mark changed images as reviewed after the new c
   assert.equal(count("GENERATE"), 0); assert.equal(count("SET_REVIEW"), 1);
   await resume(fixture.projectId, fixture.runId);
   assert.equal(count("SET_REVIEW"), 1);
+});
+
+test("existing workflow retains A and chat after settings change; new workflow uses B and Responses for every role", async () => {
+  const { saveProviderDefaults } = await import("../lib/services/provider-defaults");
+  const provider = await db.providerConfig.findFirstOrThrow({ where: { isActive: true } });
+  await db.modelProfile.createMany({ data: ["text-B", "vision-B", "image-B"].map(modelId => ({ providerConfigId: provider.id, modelId, label: modelId, capabilities: { text: true, vision: true, image_gen: true, image_edit: true }, roles: {} })) });
+  respond = async call => call.kind === "PLAN" ? new Response("timeout", { status: 504 }) : success(call);
+  const first = await start(); await settled(first.runId);
+  await saveProviderDefaults(provider.id, { planningModelId: "text-B", analysisModelId: "vision-B", heroImageModelId: "image-B", detailImageModelId: "image-B", imageEditModelId: "image-B", textProtocol: "responses" });
+  calls = []; respond = success;
+  try {
+    const resumed = await resume(first.projectId, first.runId, true);
+    assert.equal(resumed.status, "COMPLETED");
+    assert.ok(calls.filter(c => c.kind !== "GENERATE").every(c => c.body.model === "gpt-6-luna" && c.url.endsWith("/chat/completions")));
+    assert.ok(calls.filter(c => c.kind === "GENERATE").every(c => c.body.get("model") === "gpt-image-2.5-flare"));
+    calls = [];
+    const next = await start(); const complete = await settled(next.runId);
+    assert.equal(complete.status, "COMPLETED");
+    for (const call of calls) {
+      if (call.kind === "GENERATE") assert.equal(call.body.get("model"), "image-B");
+      else {
+        assert.ok(call.url.endsWith("/responses"));
+        assert.equal(call.body.model, ["IMAGE_REVIEW", "SET_REVIEW"].includes(call.kind) ? "vision-B" : "text-B");
+      }
+    }
+    const countBefore = calls.length;
+    await runtime.runWithProviderCredentials(credentials, () => service.createV4DetailRun(next.projectId, next.input, credentials));
+    assert.equal(calls.length, countBefore);
+  } finally {
+    await saveProviderDefaults(provider.id, { planningModelId: "gpt-6-luna", analysisModelId: "gpt-6-luna", heroImageModelId: "gpt-image-2.5-flare", detailImageModelId: "gpt-image-2.5-flare", imageEditModelId: "gpt-image-2.5-flare", textProtocol: "chat_completions" });
+  }
 });

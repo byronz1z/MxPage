@@ -1,6 +1,6 @@
 # 仓库介绍与检索信息维护
 
-更新日期：2026-10-01。本文面向维护者，记录仓库 SEO 与生成式搜索可读性（GEO）的维护方式。
+更新日期：2026-10-20。本文面向维护者，记录仓库 SEO 与生成式搜索可读性（GEO）的维护方式。发布目标为 `https://github.com/ziguishian/MxPage`，不是同一工作区中其他 Git remote。
 
 ## 产品定位
 
@@ -14,13 +14,13 @@
 
 简介：
 
-> 开源 AI 电商详情页生成器｜商品主图、详情长图、小红书图文、批量生图与多语言翻译。支持 Windows 桌面端和自部署，使用自己的模型 API。Open-source AI e-commerce product image & detail page generator.
+> 开源 AI 电商图片工作台：商品主图与详情页、批量图片翻译、小红书图文、LangGraph Agent。支持 Windows / macOS 和本地部署，使用自己的模型 API。Open-source e-commerce image generator, translation & agent workspace.
 
 网站入口指向 [最新 Release](https://github.com/ziguishian/MxPage/releases/latest)，使新访客能直接找到安装包。
 
 主题只选择当前真实功能与技术栈，不添加未实现的平台、热门模型或无关产品名称。优先覆盖电商、商品图片、图片生成与编辑、小红书、批量处理、翻译、自部署和兼容 API。
 
-本次已设置 15 个主题：`e-commerce`、`product-photography`、`product-images`、`product-detail-page`、`image-generation`、`image-editing`、`xiaohongshu`、`batch-processing`、`image-translation`、`openai-compatible`、`ai-agents`、`self-hosted`、`electron`、`nextjs`、`typescript`。
+本次读取远端时已有 20 个主题。待功能验收与源码推送完成后，建议将 `portable`、`workflow-automation` 替换为更准确描述新增能力的 `langgraph`、`model-context-protocol`，保留其余主题。最终列表：`ai-agents`、`batch-processing`、`deterministic-workflow`、`e-commerce`、`electron`、`image-editing`、`image-generation`、`image-translation`、`langgraph`、`macos`、`model-context-protocol`、`nextjs`、`openai-compatible`、`product-detail-page`、`product-images`、`product-photography`、`self-hosted`、`typescript`、`windows`、`xiaohongshu`。这段是发布配置，不代表尚未提交的远端修改已生效。
 
 ## 文档一致性
 
@@ -29,6 +29,14 @@
 3. 每次发布同步检查版本、系统支持、张数上限、安装文件、模型前提、费用和数据流向。
 4. 案例应标明输入背景、输出数量、来源与验收范围；单图提示词预览不能写成应用完成的整套成果。
 5. 描述功能时区分图片生产与店铺发布、本地应用与离线模型，避免新用户误解。
+6. README 顶部用“任务 → 入口 → 结果”表和直接下载/案例链接帮助定位；中英文 FAQ 对齐费用、数量、协议、翻译、恢复与数据流向。`llms.txt` 提供同一组可核实的简短答案及来源。
+7. 仓库 `main`、已发布安装包、模拟回归和真实接口验收分别标注。没有实测的模型、桌面控制能力或平台不写成已验证。
+
+## 本地应用与公开索引
+
+应用的 `/` 是带个人任务的工作区，`/agent` 是个人会话页，均不适合作为搜索入口。它们和其他工作区页面继承 `noindex`，站点地图不包含工作区 URL；即使配置 `NEXT_PUBLIC_SITE_URL`，也只允许抓取静态 `/llms.txt`。该环境变量不会创建公开官网。robots/noindex 不是访问控制，公开部署仍需独立鉴权。
+
+本轮没有部署独立官网、提交 Search Console 或购买推广；GitHub 发现主要依赖公开仓库正文、主题、案例和文档链接。若以后有实际官网域名，再为公开介绍页配置 canonical、站点地图、分享卡片和与页面一致的结构化数据，不应把个人工作区或虚构评价写入其中。
 
 ## 观察效果
 

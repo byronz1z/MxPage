@@ -12,6 +12,7 @@ import type { ProjectHistoryPage } from "@/lib/services/project-history-service"
 import { formatDate } from "@/lib/utils";
 import { historyCategories, historyCategoryLabels, historyHref, historyPageNumbers } from "@/lib/utils/project-history";
 import { platformLabels } from "@/types/domain";
+import { workEntryHref } from "@/lib/utils/project-entry";
 
 export function RecentProjectList({ history }: { history: ProjectHistoryPage }) {
   const { projects, category, page, totalPages, total, pageSize, counts } = history;
@@ -31,7 +32,7 @@ export function RecentProjectList({ history }: { history: ProjectHistoryPage }) 
       setPendingDelete(null);
       // The server also clamps/redirects the page after deleting its last item.
       startTransition(() => router.refresh());
-      toast.success("项目已删除");
+      toast.success("项目已移入回收站，可在设置 → 数据管理还原");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "项目删除失败，请重试");
     } finally {
@@ -61,8 +62,8 @@ export function RecentProjectList({ history }: { history: ProjectHistoryPage }) 
       ) : <div className={`columns-1 gap-4 md:columns-2 xl:columns-4 ${refreshing ? "opacity-60" : ""}`}>
       {projects.map((project) => (
         <article key={project.id} className="group relative mb-4 break-inside-avoid overflow-hidden rounded-3xl border border-border bg-card shadow-sm transition-shadow hover:shadow-lg">
-          <Link href={project.category === "xiaohongshu" ? `/xiaohongshu?project=${project.id}` : `/projects/${project.id}/${project.sectionCount ? "editor" : "configure"}`} aria-label={`打开作品：${project.name}`} className="block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-foreground">
-            {project.coverImageUrl ? <img src={project.coverImageUrl} alt={project.name} loading="lazy" className="block h-auto min-h-52 w-full object-cover transition-transform duration-300 motion-reduce:transition-none group-hover:scale-[1.02]"/> : <div className="flex aspect-square items-center justify-center bg-muted text-muted-foreground"><Layers3 className="h-8 w-8"/></div>}
+          <Link href={workEntryHref(project)} aria-label={`打开作品：${project.name}`} className="block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-foreground">
+            {project.coverImageUrl ? <img src={project.coverThumbnailUrl || project.coverImageUrl} alt={project.name} loading="lazy" decoding="async" onError={event => { const image = event.currentTarget; const original = new URL(project.coverImageUrl!, window.location.href).href; if (image.src !== original) image.src = original; }} className="block h-auto min-h-52 w-full object-cover transition-transform duration-300 motion-reduce:transition-none group-hover:scale-[1.02]"/> : <div className="flex aspect-square items-center justify-center bg-muted text-muted-foreground"><Layers3 className="h-8 w-8"/></div>}
             <div className="project-card-overlay pointer-events-none absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-black/90 via-black/20 to-transparent p-5 text-white opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
               <h3 className="line-clamp-2 text-lg font-semibold">{project.name}</h3>
               <p className="mt-2 text-sm text-white/90">{platformLabels[project.platform as keyof typeof platformLabels] ?? project.platform} · {project.sectionCount} 个模块</p>
@@ -89,8 +90,8 @@ export function RecentProjectList({ history }: { history: ProjectHistoryPage }) 
         open={Boolean(pendingDelete)}
         loading={deleting}
         title={pendingDelete ? `删除项目「${pendingDelete.name}」？` : "删除项目？"}
-        description="这会同时删除该项目的关联素材、生成结果与版本记录，操作不可恢复。"
-        confirmText="确认删除"
+        description="项目将移入回收站，原图、生成结果和版本记录全部保留，可在设置 → 数据管理还原。"
+        confirmText="移入回收站"
         cancelText="暂不删除"
         destructive
         icon={<Trash2 className="h-5 w-5" />}

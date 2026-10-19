@@ -1,3 +1,4 @@
+import { selectModel } from "@/lib/ai/model-selection";
 import { z } from "zod";
 import type { PageSection, ProductAsset } from "@prisma/client";
 
@@ -8,7 +9,8 @@ import {
   buildSectionSvgLayoutPrompt,
 } from "@/lib/ai/prompts";
 import { prisma } from "@/lib/db/prisma";
-import { getProviderAdapter } from "@/lib/services/provider-service";
+import { getProviderAdapter, snapshotProvider } from "@/lib/services/provider-service";
+import { imageTaskLifecycle, prepareImageRecovery, trackedImageRequest } from "./image-task-recovery";
 import {
   assertTaskNotCanceled,
   completeTask,
@@ -179,76 +181,12 @@ function canEditRealImage(model: { capabilities: unknown }) {
   );
 }
 
-function buildImageModelCandidates(
-  provider: ProviderContext,
-  options?: {
-    preferredModelId?: string | null;
-    regenerate?: boolean;
-    edit?: boolean;
-  },
-) {
-  const candidatePool = provider.models.filter((item) =>
-    options?.edit ? canEditRealImage(item) : canGenerateRealImage(item),
-  );
-
-  const defaultKey = options?.edit
-    ? "isDefaultImageEdit"
-    : options?.regenerate
-      ? "isDefaultDetailImage"
-      : "isDefaultHeroImage";
-
-  // The current five-round quality test is intentionally pinned to the
-  // models discovered from the active provider. Never silently fall back to
-  // another image model when Flare is available.
-  const normalized = (value: string) => value.toLowerCase().replace(/[^a-z0-9.]/g, "");
-  const flare = candidatePool.find(item => normalized(item.modelId) === "gptimage2.5flare");
-  if (flare) return [flare.modelId];
-
-  if (options?.preferredModelId) {
-    return [options.preferredModelId];
-  }
-
-  const configuredDefault =
-    candidatePool.find((item) => Boolean(item[defaultKey]))?.modelId ??
-    (!options?.edit ? candidatePool.find((item) => item.isDefaultDetailImage)?.modelId : null);
-
-  if (configuredDefault) {
-    return [configuredDefault];
-  }
-
-  const candidates = [
-    ...candidatePool
-      .filter((item) => isStableImageModel(item.modelId) && isPreferredImageModel(item.modelId))
-      .map((item) => item.modelId),
-    ...candidatePool.filter((item) => isStableImageModel(item.modelId)).map((item) => item.modelId),
-    ...candidatePool.filter((item) => isPreferredImageModel(item.modelId)).map((item) => item.modelId),
-    ...candidatePool.map((item) => item.modelId),
-  ].filter(Boolean) as string[];
-
-  return [...new Set(candidates)];
+function buildImageModelCandidates(provider: ProviderContext, options?: { preferredModelId?: string | null; edit?: boolean; regenerate?: boolean; role?: "hero" | "detail" }) {
+  return [selectModel(provider.models, options?.edit ? "edit" : options?.role || "detail", options?.preferredModelId)];
 }
 
-function buildSvgModelCandidates(provider: ProviderContext) {
-  const visionText = provider.models.filter((item) => hasTextCapability(item) && hasVisionCapability(item));
-  const textOnly = provider.models.filter((item) => hasTextCapability(item));
 
-  const candidates = [
-    provider.models.find((item) => item.isDefaultPlanning)?.modelId ?? null,
-    provider.models.find((item) => item.isDefaultAnalysis)?.modelId ?? null,
-    ...visionText
-      .filter((item) => /gemini|gpt-4o|gpt-5/i.test(item.modelId) && !/preview|experimental|beta|test/i.test(item.modelId))
-      .map((item) => item.modelId),
-    ...visionText.filter((item) => !/preview|experimental|beta|test/i.test(item.modelId)).map((item) => item.modelId),
-    ...textOnly
-      .filter((item) => /gemini|gpt-4o|gpt-5/i.test(item.modelId) && !/preview|experimental|beta|test/i.test(item.modelId))
-      .map((item) => item.modelId),
-    ...textOnly.filter((item) => !/preview|experimental|beta|test/i.test(item.modelId)).map((item) => item.modelId),
-    ...textOnly.map((item) => item.modelId),
-  ].filter(Boolean) as string[];
-
-  return [...new Set(candidates)];
-}
-
+function buildSvgModelCandidates(provider: ProviderContext) { return [selectModel(provider.models, "planning", undefined, true)]; }
 function shouldFallbackToNextImageModel(error: unknown) {
   if (!(error instanceof Error)) {
     return false;
@@ -400,13 +338,14 @@ async function generateWithFallback(params: {
   projectId: string;
   sectionId: string;
   operation: string;
+  taskId: string;
   signal?: AbortSignal;
 }) {
   const errors: string[] = [];
 
   for (const model of params.candidateModels) {
     try {
-      const generated = await params.adapter.generateImage({
+      const generated = await trackedImageRequest(params.taskId, () => params.adapter.generateImageOnce({
         model,
         prompt: params.prompt,
         size: params.size,
@@ -418,7 +357,8 @@ async function generateWithFallback(params: {
           operation: params.operation,
         },
         signal: params.signal,
-      });
+        ...imageTaskLifecycle(params.taskId),
+      }));
 
       return {
         model,
@@ -450,6 +390,7 @@ async function editWithFallback(params: {
   projectId: string;
   sectionId: string;
   operation: string;
+  taskId: string;
   quality?: "auto" | "low" | "medium" | "high" | "xhigh" | "max";
   signal?: AbortSignal;
 }) {
@@ -457,7 +398,7 @@ async function editWithFallback(params: {
 
   for (const model of params.candidateModels) {
     try {
-      const generated = await params.adapter.editImage({
+      const generated = await trackedImageRequest(params.taskId, () => params.adapter.editImage({
         quality: params.quality,
         model,
         prompt: params.prompt,
@@ -471,7 +412,8 @@ async function editWithFallback(params: {
           operation: params.operation,
         },
         signal: params.signal,
-      });
+        ...imageTaskLifecycle(params.taskId),
+      }));
 
       return {
         model,
@@ -690,6 +632,7 @@ async function generateSectionImageInternal(
     throw new Error("当前模块图仍在生成中，请等待这一轮完成后再试。");
   }
 
+  const generationProvider = await getProviderAdapter();
   const task = await createTask({
     projectId,
     sectionId,
@@ -697,6 +640,8 @@ async function generateSectionImageInternal(
     inputPayload: {
       referenceAssetIds: options?.referenceAssetIds ?? [],
       regenerate: Boolean(options?.regenerate),
+      providerSnapshot: snapshotProvider(generationProvider.provider),
+      modelId: selectModel(generationProvider.provider.models, section.type === "HERO" ? "hero" : "detail", options?.preferredModelId),
     },
   });
   const taskSignal = registerTaskAbortController(task.id);
@@ -709,13 +654,13 @@ async function generateSectionImageInternal(
     });
     await assertTaskNotCanceled(task.id);
 
-    const { provider, adapter } = await getProviderAdapter();
+    const { provider, adapter } = generationProvider;
     const generationSettings = getGenerationSettings(project);
     const visualStyleGuide = getProjectVisualStyleGuide(project);
     const generationRequirements = readGenerationRequirements(project.analysis?.normalizedResult);
     const sectionAspectRatio = getSectionAspectRatio(section, generationSettings.imageAspectRatio);
     const outputSize = getOutputSize(sectionAspectRatio);
-    const modelCandidates = buildImageModelCandidates(provider, options);
+    const modelCandidates = buildImageModelCandidates(provider, { ...options, role: section.type === "HERO" ? "hero" : "detail" });
     const selectedModel = modelCandidates[0] ?? null;
     const explicitReferenceAssets = await resolveReferenceAssets(options?.referenceAssetIds ?? []);
     const effectiveReferenceAssets = mergeReferenceAssets(
@@ -773,6 +718,8 @@ async function generateSectionImageInternal(
         throw new Error("当前 Provider 没有识别到可用于真实图片生成的模型。");
       }
 
+      await prepareImageRecovery(task.id, { model: selectedModel, prompt, copy: section.copy, baseImageAssetId: section.currentImageAssetId,
+        metadata: { mode: "image_api", sourceReferenceAssetIds: effectiveReferenceAssets.map(asset => asset.id) } });
       const generation = await generateWithFallback({
         adapter,
         candidateModels: modelCandidates,
@@ -783,6 +730,7 @@ async function generateSectionImageInternal(
         projectId,
         sectionId,
         operation: options?.regenerate ? "regenerate_section_image" : "generate_section_image",
+        taskId: task.id,
         signal: taskSignal,
       });
       await assertTaskNotCanceled(task.id);
@@ -793,6 +741,7 @@ async function generateSectionImageInternal(
         prompt,
         source: generation.generated,
         metadata: {
+          recoveryTaskId: task.id,
           mode: "image_api",
           usedModel: generation.model,
           sourceReferenceAssetIds: effectiveReferenceAssets.map((asset) => asset.id),
@@ -805,6 +754,8 @@ async function generateSectionImageInternal(
       generationMode = "image_api";
     } catch (error) {
       if (isTaskCanceledError(error)) throw error;
+      const failedTask = await prisma.generationTask.findUnique({ where: { id: task.id } });
+      if (["pending_query", "uncertain"].includes((failedTask?.outputPayload as any)?.imageOutcome)) throw error;
       if (!generationSettings.allowSvgFallback) {
         const detail = error instanceof Error ? error.message : "Unknown image generation error";
         if (/monthly spending limit|spending limit|billing|quota/i.test(detail)) {
@@ -1007,6 +958,7 @@ export async function editSectionImage(
     taskType: "REGENERATE",
     inputPayload: {
       mode: "edit_image",
+      providerSnapshot: snapshotProvider(provider),
       editMode,
       targetLanguage: editMode === "translate" ? effectiveContentLanguage : undefined,
       model: selectedModel,
@@ -1065,9 +1017,13 @@ export async function editSectionImage(
         throw new Error("当前 Provider 没有识别到可用于真实图片编辑的模型。");
       }
 
+      await prepareImageRecovery(task.id, { model: selectedModel, prompt, copy: section.copy, baseImageAssetId: section.currentImageAssetId,
+        metadata: { mode: "image_api", editMode, targetLanguage: editMode === "translate" ? effectiveContentLanguage : undefined, baseImageAssetId: section.currentImageAssetId, sourceReferenceAssetIds: productReferenceAssets.map(asset => asset.id) } });
       const generation = editMode === "translate" ? {
         model: selectedModel,
-        generated: await adapter.generateImageOnce({ model: selectedModel, prompt, referenceImages: [baseImage], size: "auto", quality: generationSettings.quality, timeoutMs: 180000, monitor: { projectId, sectionId, operation: "translate_section_image" } }),
+        generated: await trackedImageRequest(task.id, () => adapter.generateImageOnce({ model: selectedModel, prompt, referenceImages: [baseImage], size: "auto", quality: generationSettings.quality, timeoutMs: 180000, monitor: { projectId, sectionId, operation: "translate_section_image" },
+          ...imageTaskLifecycle(task.id),
+        })),
       } : await editWithFallback({
         adapter,
         candidateModels: modelCandidates,
@@ -1079,6 +1035,7 @@ export async function editSectionImage(
         projectId,
         sectionId,
         operation: editMode === "enhance" ? "enhance_section_image" : "repaint_section_image",
+        taskId: task.id,
         quality: generationSettings.quality,
       });
 
@@ -1088,6 +1045,7 @@ export async function editSectionImage(
         prompt,
         source: generation.generated,
         metadata: {
+          recoveryTaskId: task.id,
           mode: "image_api",
           usedModel: generation.model,
           editMode,
@@ -1102,6 +1060,8 @@ export async function editSectionImage(
       generationMode = "image_api";
     } catch (error) {
       if (editMode === "translate") throw error;
+      const failedTask = await prisma.generationTask.findUnique({ where: { id: task.id } });
+      if (["pending_query", "uncertain"].includes((failedTask?.outputPayload as any)?.imageOutcome)) throw error;
       if (!generationSettings.allowSvgFallback) {
         const detail = error instanceof Error ? error.message : "Unknown image edit error";
         if (/monthly spending limit|spending limit|billing|quota/i.test(detail)) {
@@ -1173,6 +1133,7 @@ export async function editSectionImage(
 
     await completeTask(task.id, {
       mode: "edit_image",
+      providerSnapshot: snapshotProvider(provider),
       editMode,
       targetLanguage: editMode === "translate" ? effectiveContentLanguage : undefined,
       imageAssetId: imageAsset.id,

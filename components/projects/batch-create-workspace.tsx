@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ImageUploadDropzone } from "@/components/shared/image-upload-dropzone";
 import { fileToBase64Payload } from "@/lib/utils/base64-upload";
+import { validateUploadFiles } from "@/lib/storage/upload-limits";
 
 type BatchStatus = {
   fileName: string;
@@ -101,6 +102,7 @@ export function BatchCreateWorkspace() {
     );
 
     try {
+      validateUploadFiles(batchFiles);
       const files = await Promise.all(batchFiles.map((file) => fileToBase64Payload(file)));
       const response = await fetch("/api/tasks/batch-create", {
         method: "POST",

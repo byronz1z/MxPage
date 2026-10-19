@@ -6,6 +6,7 @@ type DetectedModelInput = {
   type?: string | null;
   category?: string | null;
   modalities?: string[];
+  imageProtocol?: "openai_images" | "gemini_native";
 };
 
 const emptyCapabilityMap = (): CapabilityMap => ({
@@ -48,7 +49,7 @@ export function detectModelCapabilities(model: string | DetectedModelInput): Cap
   const id = (typeof model === "string" ? model : model.id).toLowerCase();
   const text = modelText(model);
   const map = emptyCapabilityMap();
-  const isGptImageModel = /(?:^|[-_\s])gpt[-_\s]?image(?:[-_\s]?(?:\d+(?:\.\d+)?|mini))?|chatgpt-image/.test(id);
+  const isGptImageModel = /(?:^|[-_/\s:])gpt[-_\s]?image(?:[-_\s]?(?:\d+(?:\.\d+)?|mini))?|chatgpt-image/.test(id);
   const isDallE2 = /dall[-_\s]?e[-_\s]?2/.test(id);
   const isImageTyped = /(^|\b)(image|images|image_generation|image-gen|image_gen)(\b|$)/.test(text);
   const isImageEditTyped = /(image_edit|image-edit|edit|edits|inpaint|mask|retouch)/.test(text);
@@ -85,6 +86,12 @@ export function detectModelCapabilities(model: string | DetectedModelInput): Cap
     map.image_gen = true;
     map.image_edit = true;
     map.high_quality = true;
+  }
+
+  // Gemini image models accept images plus instructions through generateContent.
+  // This is conversational editing, not evidence of mask/inpainting support.
+  if (/gemini.*image|(?:^|[-_/])nano-banana/.test(id) && !isUtilityModel) {
+    map.image_edit = true;
   }
 
   if (isDallE2) {
@@ -132,6 +139,7 @@ export function normalizeDetectedModels(
 ): ModelDetectionResult[] {
   return models.map((model) => {
     const capabilities = detectModelCapabilities(model);
+    if (model.imageProtocol) Object.assign(capabilities, { image_gen: true, image_edit: true, __imageProtocolHint: model.imageProtocol });
     return {
       modelId: model.id,
       label: model.label ?? model.id,

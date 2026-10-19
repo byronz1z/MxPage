@@ -1,7 +1,39 @@
+import { selectModel } from "@/lib/ai/model-selection";
+import path from "node:path";
 import { xiaohongshuPlanSchema, type XiaohongshuPlan } from "@/lib/ai/schemas/xiaohongshu";
 import type { ImageGenerationResult } from "@/lib/ai/provider-client";
-import { getProviderAdapter } from "@/lib/services/provider-service";
+import { getProviderAdapter, snapshotProvider } from "@/lib/services/provider-service";
 import { buildVisualPromptWithAgent } from "@/lib/services/visual-prompt-agent";
+import { prisma } from "@/lib/db/prisma";
+import { createTask, completeTask, failTask, assertTaskNotCanceled } from "./task-service";
+import { imageTaskLifecycle, prepareImageRecovery, trackedImageRequest } from "./image-task-recovery";
+import { assetPublicUrl, readStorageFile, saveGeneratedImage } from "@/lib/storage/asset-manager";
+import type { ImageTaskLifecycle } from "@/lib/ai/provider-client";
+
+async function resolveStoredImage(image: string) {
+  if (!image.startsWith("/api/files/")) return image;
+  const relative = image.slice("/api/files/".length);
+  const asset = await prisma.productAsset.findFirst({ where: { filePath: { in: [relative, relative.split("/").join(path.sep)] } } });
+  if (!asset || assetPublicUrl(asset) !== image || !asset.mimeType?.startsWith("image/")) throw new Error("找不到原图片文件，请重新选择图片。");
+  return `data:${asset.mimeType};base64,${(await readStorageFile(asset.filePath)).toString("base64")}`;
+}
+
+async function storedXhsImage(provider: Awaited<ReturnType<typeof getProviderAdapter>>["provider"], model: string, prompt: string, title: string, pageNumber: number | undefined, execute: (lifecycle: ImageTaskLifecycle) => Promise<ImageGenerationResult>, parentTaskId?: string) {
+  const project = await prisma.$transaction(async tx => await tx.project.findFirst({ where: { platform: "__mxpage_system_task__" } })
+    ?? await tx.project.create({ data: { name: "MxPage 系统任务", platform: "__mxpage_system_task__", style: "system" } }));
+  const task = await createTask({ projectId: project.id, taskType: "XHS_GENERATE", inputPayload: { workflow: "image-operation-v1", providerSnapshot: snapshotProvider(provider), modelId: model, parentTaskId } });
+  await prepareImageRecovery(task.id, { model, prompt, title, pageNumber, copy: "", baseImageAssetId: null });
+  try {
+    const lifecycle = imageTaskLifecycle(task.id);
+    const result = await trackedImageRequest(task.id, () => execute({ ...lifecycle, beforeSubmit: async () => { if (parentTaskId) await assertTaskNotCanceled(parentTaskId); await lifecycle.beforeSubmit?.(); } }));
+    const asset = await saveGeneratedImage({ projectId: project.id, sectionId: null, prompt, source: result, metadata: { usedModel: model, recoveryTaskId: task.id, title, pageNumber } });
+    await completeTask(task.id, { imageAssetId: asset.id, imageUrl: assetPublicUrl(asset), usedModel: model });
+    return { ...result, url: assetPublicUrl(asset)!, b64Json: undefined };
+  } catch (error) {
+    await failTask(task.id, error instanceof Error ? error.message : "图片处理未完成");
+    throw error;
+  }
+}
 
 export type XiaohongshuImageAspectRatio = "1:1" | "3:4" | "9:16";
 
@@ -15,6 +47,7 @@ export type XiaohongshuPlanInput = {
 type GenerateXiaohongshuOptions = {
   imageAspectRatio?: XiaohongshuImageAspectRatio;
   pageNumber?: number;
+  parentTaskId?: string;
 };
 
 type EditXiaohongshuOptions = {
@@ -253,21 +286,8 @@ function unique(values: Array<string | null | undefined>) {
   return values.filter((value, index, array): value is string => Boolean(value) && array.indexOf(value) === index);
 }
 
-function getImageGenerationModels(provider: Awaited<ReturnType<typeof getProviderAdapter>>["provider"]) {
-  return unique([
-    provider.models.find((item) => item.isDefaultHeroImage)?.modelId,
-    provider.models.find((item) => item.isDefaultDetailImage)?.modelId,
-    provider.models.find((item) => Boolean((item.capabilities as Record<string, boolean>).image_gen))?.modelId,
-  ]);
-}
-
-function getImageEditModels(provider: Awaited<ReturnType<typeof getProviderAdapter>>["provider"]) {
-  return unique([
-    provider.models.find((item) => item.isDefaultImageEdit)?.modelId,
-    provider.models.find((item) => Boolean((item.capabilities as Record<string, boolean>).image_edit))?.modelId,
-    provider.models.find((item) => item.isDefaultHeroImage)?.modelId,
-  ]);
-}
+function getImageGenerationModels(provider: Awaited<ReturnType<typeof getProviderAdapter>>["provider"]) { return [selectModel(provider.models, "hero")]; }
+function getImageEditModels(provider: Awaited<ReturnType<typeof getProviderAdapter>>["provider"]) { return [selectModel(provider.models, "edit")]; }
 
 function buildPageImagePrompt(
   plan: XiaohongshuPlan,
@@ -327,10 +347,7 @@ export async function planXiaohongshuPost(input: XiaohongshuPlanInput) {
   const imageCount = normalizeImageCount(input.imageCount);
   const imageAspectRatio = normalizeAspectRatio(input.imageAspectRatio);
   const { provider, adapter } = await getProviderAdapter();
-  const model =
-    provider.models.find((item) => item.isDefaultPlanning)?.modelId ??
-    provider.models.find((item) => (item.capabilities as Record<string, boolean>).structured_output)?.modelId ??
-    provider.models.find((item) => (item.capabilities as Record<string, boolean>).text)?.modelId;
+  const model = selectModel(provider.models, "planning");
 
   if (!model) {
     throw new Error("当前没有可用的小红书图文规划模型。");
@@ -363,6 +380,7 @@ export async function generateXiaohongshuImages(
   referenceImages: string[] = [],
   options: GenerateXiaohongshuOptions = {},
 ) {
+  referenceImages = await Promise.all(referenceImages.map(resolveStoredImage));
   const imageAspectRatio = normalizeAspectRatio(options.imageAspectRatio);
   const { provider, adapter } = await getProviderAdapter();
   const models = getImageGenerationModels(provider);
@@ -404,7 +422,8 @@ export async function generateXiaohongshuImages(
     const generated = await runImageModel(
       models,
       (model) =>
-        adapter.generateImage({
+        storedXhsImage(provider, model, prompt, page.title, page.pageNumber, lifecycle => adapter.generateImageOnce({
+          ...lifecycle,
           model,
           prompt,
           aspectRatio: imageAspectRatio,
@@ -413,7 +432,7 @@ export async function generateXiaohongshuImages(
           monitor: {
             operation: "xiaohongshu_image_generate",
           },
-        }),
+        }), options.parentTaskId),
       "当前没有可用的小红书图像生成模型。",
     );
 
@@ -436,6 +455,7 @@ export async function editXiaohongshuImage(input: {
   prompt: string;
   page?: XiaohongshuPlan["pages"][number] | null;
 } & EditXiaohongshuOptions) {
+  const sourceImage = await resolveStoredImage(input.imageUrl);
   const imageAspectRatio = normalizeAspectRatio(input.imageAspectRatio);
   const { provider, adapter } = await getProviderAdapter();
   const models = getImageEditModels(provider);
@@ -459,7 +479,7 @@ export async function editXiaohongshuImage(input: {
     basePrompt,
     aspectRatio: imageAspectRatio,
     contentLanguage: "zh-CN",
-    referenceImages: [input.imageUrl],
+    referenceImages: [sourceImage],
     productContext: {
       page: input.page ?? null,
       userEditInstruction: input.prompt,
@@ -471,16 +491,17 @@ export async function editXiaohongshuImage(input: {
   const edited = await runImageModel(
     models,
     (model) =>
-      adapter.editImage({
+      storedXhsImage(provider, model, prompt, input.page?.title || "小红书单页修改", input.page?.pageNumber, lifecycle => adapter.editImage({
+        ...lifecycle,
         model,
-        image: input.imageUrl,
+        image: sourceImage,
         prompt,
         aspectRatio: imageAspectRatio,
         timeoutMs: 120000,
         monitor: {
           operation: "xiaohongshu_image_edit",
         },
-      }),
+      })),
     "当前没有可用的小红书图像编辑模型。",
   );
 
