@@ -304,10 +304,18 @@ tests/                  隔离的单元及流程测试
 
 <img width="360" alt="MxPage 交流二维码" src="https://github.com/user-attachments/assets/028cfd0b-a813-4655-9b49-aa9ab6619c7d" />
 
+
+---
+
 ## Contributors
 
-Thanks to everyone who has contributed to this project!
+Thanks to everyone who contributes to MxPage.
 
-<a href="https://github.com/你的用户名/你的仓库/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=你的用户名/你的仓库" />
+<a href="https://github.com/ziguishian/MxPage/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=ziguishian/MxPage" alt="Contributors" />
 </a>
+
+Contributions of all kinds are welcome, including bug reports, feature requests, code improvements, documentation, and feedback.
+
+If you find MxPage useful, consider giving it a ⭐ on GitHub and sharing it with others.
+
