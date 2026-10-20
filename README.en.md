@@ -228,7 +228,7 @@ npm run dist:mac         # Current native architecture ZIP on macOS
 npm run smoke:desktop   # Packaged SQLite/Prisma/sharp and local HTTP routes
 ```
 
-Future runs of the [release pipeline](.github/workflows/desktop-release.yml) build and smoke-test on native Windows x64 and macOS Apple Silicon runners, publishing both ZIPs and SHA256 sums only after all checks pass. The already-started v0.3.2 Intel Mac build follows the original pipeline; subsequent releases no longer produce Intel Mac packages. Developer data, keys and local test reports are excluded.
+The [release pipeline](.github/workflows/desktop-release.yml) builds and smoke-tests on native Windows, macOS ARM64 and Intel runners before publishing ZIPs and SHA256 sums. Developer data, keys and local test reports are excluded.
 
 Stack: Next.js 14, React 18, TypeScript, Prisma/SQLite, OpenAI SDK and Electron. V4 is in `lib/detail-runs/`, translation in `lib/translation/`, usage/billing in `lib/monitor/`, desktop startup in `desktop/`.
 
