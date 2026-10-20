@@ -46,6 +46,15 @@ async function until(fn) { for(let i=0;i<300;i++){if(await fn())return;await sle
     await until(async()=>{try{return(await fetch(`${url}/agent`)).ok;}catch{return false;}});
     browser=await chromium.launch({...(process.env.BROWSER_EXECUTABLE?{executablePath:process.env.BROWSER_EXECUTABLE}:fs.existsSync(chromium.executablePath())?{}:{channel:'chrome'}),headless:true,args:['--no-proxy-server']});const page=await browser.newPage({viewport:{width:1600,height:1050}});const errors=[];page.on('pageerror',error=>errors.push(error.message));
     await page.addInitScript(({key,baseUrl})=>localStorage.setItem('mxpage:provider-credentials:v1',JSON.stringify({apiKey:key,baseUrl})),{key,baseUrl});
+    await page.addInitScript(() => {
+      const NativeEventSource = window.EventSource;
+      window.EventSource = class extends NativeEventSource {
+        constructor(url, options) {
+          super(url, options);
+          this.addEventListener('message', event => { window.__lastAgentEvent = JSON.parse(event.data).seq; });
+        }
+      };
+    });
     await page.goto(`${url}/agent`);await page.getByRole('heading',{name:'Agent 工作台',exact:true}).waitFor();
     const nav=page.getByRole('navigation',{name:'主导航',exact:true});assert.deepEqual((await nav.locator('a').allTextContents()).slice(0,2),['Agent 工作台','一键详情页']);
     await page.getByLabel('发送消息',{exact:true}).fill('请整理研究文档并导出');await page.getByRole('button',{name:'发送',exact:true}).click();
@@ -57,6 +66,15 @@ async function until(fn) { for(let i=0;i<300;i++){if(await fn())return;await sle
     const download=page.getByRole('link',{name:'下载 研究文档.md',exact:true});await download.waitFor();
     assert.equal((await fetch(url+await download.getAttribute('href'))).status,200);
     assert.equal(await db.agentArtifact.count(),1);assert.ok(calls.every(c=>c.model==='agent-model-A'));
+    await until(async()=>Boolean(await db.agentRun.findFirst({where:{status:'COMPLETED'}})));
+    const completedRun=await db.agentRun.findFirstOrThrow({where:{status:'COMPLETED'}});
+    const callCount=calls.length;
+    // A delayed/replayed delta must not duplicate the already persisted answer.
+    const replay=await db.agentEvent.create({data:{runId:completedRun.id,type:'text_delta',data:{text:'研究文档已经导出，可在成果面板下载。'}}});
+    await page.waitForFunction(seq=>window.__lastAgentEvent>=seq,replay.seq);
+    await page.evaluate(()=>new Promise(requestAnimationFrame));
+    assert.equal(await page.getByText('研究文档已经导出，可在成果面板下载。',{exact:true}).count(),1);
+    assert.equal(calls.length,callCount,'event replay must not dispatch another model request');
     await page.getByRole('heading', { name: '费用记录（USD）', exact: true }).waitFor();
     await page.getByRole('button',{name:'预览 研究文档.md',exact:true}).click();
     await page.getByRole('dialog').getByText('浏览器验收产物。',{exact:true}).waitFor();
@@ -68,7 +86,7 @@ async function until(fn) { for(let i=0;i<300;i++){if(await fn())return;await sle
     await page.screenshot({path:'test-output/agent-browser/mobile.png',fullPage:true});await page.getByRole('button',{name:'关闭',exact:true}).click();
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false,'mobile overflow');
     await page.goto(`${url}/settings/agent`);await page.getByRole('heading',{name:'Agent 设置',exact:true}).waitFor();await page.getByRole('button',{name:'保存设置',exact:true}).click();await page.getByText('已保存。新任务使用新设置，已有任务继续使用原快照。',{exact:true}).waitFor();
-    assert.deepEqual(errors,[]);console.log('PASS Agent browser: navigation, confirmation, refresh, document download, rename, mobile drawers, settings');
+    assert.deepEqual(errors,[]);console.log('PASS Agent browser: navigation, confirmation, refresh, document download, answer replay without duplication, rename, mobile drawers, settings');
   }catch(error){
     if(browser){const pages=browser.contexts().flatMap(c=>c.pages());if(pages[0]){await pages[0].screenshot({path:'test-output/agent-browser/failure.png',fullPage:true});fs.writeFileSync('test-output/agent-browser/failure.txt',await pages[0].locator('body').innerText());}}
     fs.writeFileSync('test-output/agent-browser/runs.json',JSON.stringify(await db.agentRun.findMany(),null,2));

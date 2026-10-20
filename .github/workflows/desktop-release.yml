@@ -34,6 +34,7 @@ jobs:
       - run: npx playwright-core install --with-deps chromium
       - run: npm run test:browser
       - run: node tests/browser/regression.cjs --prompt-review-flow
+      - run: npm run test:agent:browser
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
