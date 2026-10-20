@@ -15,7 +15,8 @@ async function until(fn) { for(let i=0;i<300;i++){if(await fn())return;await sle
   process.chdir(path.resolve(__dirname,'../..'));
   const runId=randomUUID(), dist=`.next-browser-${runId}`, config=`.browser-tsconfig-${runId}.json`;
   fs.copyFileSync('tsconfig.json',config); fs.mkdirSync('test-output/agent-browser',{recursive:true});
-  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'mx-agent-browser-')), filename=path.join(directory,'test.db');
+  const fixtureRoot=fs.realpathSync(os.tmpdir());
+  const directory=fs.mkdtempSync(path.join(fixtureRoot,'mx-agent-browser-')), filename=path.join(directory,'test.db');
   const sqlite=new DatabaseSync(filename);
   for(const entry of fs.readdirSync('prisma/migrations',{withFileTypes:true}).filter(e=>e.isDirectory()).sort((a,b)=>a.name.localeCompare(b.name)))sqlite.exec(fs.readFileSync(path.join('prisma/migrations',entry.name,'migration.sql'),'utf8'));sqlite.close();
   const databaseUrl=`file:${filename.replaceAll('\\','/')}`, db=new PrismaClient({datasourceUrl:databaseUrl});
@@ -77,6 +78,6 @@ async function until(fn) { for(let i=0;i<300;i++){if(await fn())return;await sle
     await browser?.close();if(process.platform==='win32')spawnSync('taskkill',['/pid',String(server.pid),'/T','/F'],{windowsHide:true,stdio:'ignore'});else server.kill('SIGTERM');
     await db.$disconnect();upstream.close();fs.closeSync(log);
     for(const item of [dist,config]){const resolved=path.resolve(item);if(path.dirname(resolved)!==process.cwd()||!item.includes(runId))throw Error('Invalid cache cleanup');fs.rmSync(resolved,{recursive:true,force:true,maxRetries:5,retryDelay:200});}
-    if(path.dirname(directory)!==path.resolve(os.tmpdir())||!path.basename(directory).startsWith('mx-agent-browser-'))throw Error('Invalid fixture cleanup');fs.rmSync(directory,{recursive:true,force:true,maxRetries:5,retryDelay:200});
+    if(path.dirname(directory)!==fixtureRoot||!path.basename(directory).startsWith('mx-agent-browser-'))throw Error('Invalid fixture cleanup');fs.rmSync(directory,{recursive:true,force:true,maxRetries:5,retryDelay:200});
   }
 })().catch(error=>{console.error(error);process.exitCode=1});

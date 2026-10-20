@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
@@ -34,7 +34,8 @@ async function setModel(protocol = "chat_completions", modelId = "model-A") {
   await db.modelProfile.upsert({ where: { providerConfigId_modelId: { providerConfigId: "agent-provider", modelId } }, create: { providerConfigId: "agent-provider", modelId, label: modelId, capabilities: { text: true, vision: true, __agentTools: { key, protocol, streaming: false, verifiedAt: new Date().toISOString() } }, roles: {}, isDefaultPlanning: true }, update: { isDefaultPlanning: true, capabilities: { text: true, vision: true, __agentTools: { key, protocol, streaming: false, verifiedAt: new Date().toISOString() } } } });
 }
 before(async () => {
-  directory = await mkdtemp(path.join(tmpdir(), "mx-agent-test-"));
+  // macOS tmpdir uses /var -> /private/var; fixtures need a physical root for the strict workspace guard.
+  directory = await mkdtemp(path.join(await realpath(tmpdir()), "mx-agent-test-"));
   const database = path.join(directory, "test.db");
   const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite"); const sqlite = new DatabaseSync(database);
   try { for (const item of (await readdir("prisma/migrations", { withFileTypes: true })).filter(i => i.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))) sqlite.exec(await readFile(path.join("prisma/migrations", item.name, "migration.sql"), "utf8")); } finally { sqlite.close(); }
@@ -51,7 +52,7 @@ before(async () => {
     return Response.json(completion(body, reply(body)));
   };
 });
-after(async () => { globalThis.fetch = originalFetch; await db?.$disconnect(); if (directory?.startsWith(path.join(tmpdir(), "mx-agent-test-"))) await rm(directory, { recursive: true, force: true }); });
+after(async () => { globalThis.fetch = originalFetch; await db?.$disconnect(); if (directory?.startsWith(path.join(await realpath(tmpdir()), "mx-agent-test-"))) await rm(directory, { recursive: true, force: true }); });
 
 test("Agent native tool checks persist CloseAI routes across cache and snapshot restoration", async t => {
   const { prepareAgentModel, agentModel } = await import("../lib/agent/model");
