@@ -17,8 +17,12 @@ export function resolveImageModel(baseUrl: string, model: string, settings: Imag
   if (settings.imageModelSettings?.[model]) return settings.imageModelSettings[model];
   const gemini = /gemini.*image|nano-banana|banana/i.test(model);
   if (settings.legacyImageRouting) return { protocol: gemini ? "gemini_proxy" : (settings.imageProtocol ?? resolveImageProtocol(baseUrl)) === "evolink_tasks" && isEvoLinkTaskModel(model) ? "evolink_tasks" : "openai_images" };
-  const contract = resolveImageProtocol(baseUrl) === "evolink_tasks" ? evoLinkImageContract(model) : undefined;
-  if (contract) return { protocol: "evolink_tasks", contract };
+  // Unknown EvoLink Gemini models must fail contract validation, not inherit a
+  // Gemini proxy URL from their name. Saved successful routes above stay intact.
+  if (resolveImageProtocol(baseUrl) === "evolink_tasks") {
+    const contract = evoLinkImageContract(model);
+    if (contract || gemini) return { protocol: "evolink_tasks", ...(contract ? { contract } : {}) };
+  }
   if (new URL(baseUrl).hostname === "generativelanguage.googleapis.com" || /\/v1beta\/?$/.test(new URL(baseUrl).pathname) && !/\/google\//.test(baseUrl)) return { protocol: "gemini_native" };
   return { protocol: gemini ? "gemini_proxy" : "openai_images" };
 }

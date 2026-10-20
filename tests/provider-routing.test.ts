@@ -343,12 +343,12 @@ test("EvoLink async adaptation leaves other models and all other origins on thei
   }
 });
 
-test("Gemini retains its native image route on both ordinary and EvoLink origins", async () => {
+test("Gemini keeps ordinary proxy routes and previously saved EvoLink proxy routes", async () => {
   const { OpenAICompatibleAdapter } = await import("../lib/ai/adapters/openai-compatible");
   const model = "gemini-2.5-flash-image", image = "data:image/png;base64,AA==";
   respond = () => Response.json({ candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: "AA==" } }] } }] });
   for (const baseUrl of [credentials.baseUrl, "https://api.evolink.ai/v1"]) {
-    const adapter = new OpenAICompatibleAdapter(baseUrl, "test-only");
+    const adapter = new OpenAICompatibleAdapter(baseUrl, "test-only", baseUrl.includes("api.evolink.ai") ? { imageModelSettings: { [model]: { protocol: "gemini_proxy" } } } : {});
     for (const edit of [false, true]) {
       const count = calls.length;
       const result = edit ? await adapter.editImage({ model, prompt: "edit", image }) : await adapter.generateImage({ model, prompt: "generate" });

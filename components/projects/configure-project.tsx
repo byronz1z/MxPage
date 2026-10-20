@@ -145,7 +145,7 @@ export function ConfigureProject({ project }: { project: Project }) {
           <ImageCapabilitySummary models={imageModels}/>
           {!hasOutputImages(heroCount, detailCount) && <p role="alert" className="text-sm text-destructive">{OUTPUT_COUNT_ERROR}</p>}
           <Button className="h-12 w-full" disabled={analyzing || !brief || name.trim().length < 2 || busy || !hasOutputImages(heroCount, detailCount)} onClick={generate}>{busy && <Loader2 className="mr-2 h-4 w-4 animate-spin"/>}{busy ? "正在启动…" : `确认并生成 ${heroCount + detailCount} 张图片`}</Button>
-          <p className="text-xs leading-6 text-muted-foreground">头图 1:1，详情图 3:4。主图或详情图均可选 0，只生成另一类图片；两项不能同时为 0。按画面任务设计图文节奏；每张最多自动修正一次，存疑图片保留并标记。画质影响耗时和费用。</p>
+          <p className="text-xs leading-6 text-muted-foreground">头图 1:1，详情图 3:4。主图或详情图均可选 0，只生成另一类图片；两项不能同时为 0。按画面任务设计图文节奏；质检存疑图片会保留并标记，可手动修改。画质影响耗时和费用。</p>
         </fieldset>
       </div>
     </div>

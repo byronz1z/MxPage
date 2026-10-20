@@ -718,6 +718,12 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
                           <option key={`${field.key}-${model.modelId}`} value={model.modelId}>{model.label}</option>
                         ))}
                       </Select>
+                      {field.key === "image_gen" && defaults.heroImageModelId !== defaults.detailImageModelId && (
+                        <div className="space-y-2 text-xs leading-5">
+                          <p>当前主图模型：{defaults.heroImageModelId || "未选择"}；详情图模型：{defaults.detailImageModelId || "未选择"}。此服务保留了不同的默认值。</p>
+                          <Button type="button" size="sm" variant="outline" disabled={loading !== null || !selectedValue} onClick={() => changeDefault("image_gen", selectedValue)}>主图和详情图统一使用所选模型</Button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}

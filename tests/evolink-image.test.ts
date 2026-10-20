@@ -110,6 +110,17 @@ test("documented image families select async routes and convert their own parame
   assert.equal(resolveImageModel("https://api.evolink.ai", "gpt-image-2", { imageModelSettings: { "gpt-image-2": { protocol: "openai_images" } } }).protocol, "openai_images");
 });
 
+test("undocumented EvoLink model IDs fail locally instead of guessing a Gemini proxy route", async t => {
+  const { OpenAICompatibleAdapter } = await import("../lib/ai/adapters/openai-compatible");
+  t.mock.method(globalThis, "fetch", async () => { assert.fail("No network call for an undocumented image contract"); });
+  for (const model of ["gemini-3-pro-image", "gemini-custom-image"]) {
+    assert.deepEqual(resolveImageModel("https://api.evolink.ai/v1", model), { protocol: "evolink_tasks" });
+    await assert.rejects(new OpenAICompatibleAdapter("https://api.evolink.ai", "mock-only").generateImageOnce({ model, prompt: "product", referenceImages: [image] }), /图像接口描述/);
+  }
+  assert.equal(resolveImageModel("https://api.openai-proxy.org", "gemini-3-pro-image").protocol, "gemini_proxy");
+  assert.equal(resolveImageModel("https://api.evolink.ai", "gemini-3-pro-image", { imageModelSettings: { "gemini-3-pro-image": { protocol: "gemini_proxy" } } }).protocol, "gemini_proxy");
+});
+
 test("unsupported input, special operations and masks stop before any upload or paid request", async () => {
   for (const input of [
     { model: "krea-2-turbo", referenceImages: [image] },

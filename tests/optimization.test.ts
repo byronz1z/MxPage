@@ -163,16 +163,18 @@ test("concurrent requests reserve against one money budget and completed calls r
   const session = await db.agentSession.create({ data: { title: "Budget test" } });
   const run = await db.agentRun.create({ data: { sessionId: session.id, idempotencyKey: "budget-test", status: "RUNNING", leaseToken: "owner", leaseUntil: new Date(Date.now() + 60000), input: {}, snapshot: { settings: settingsSchema.parse({ moneyBudgetUsd: 1, requestReserveUsd: 0.4 }) } } });
   const results = await Promise.allSettled([1, 2, 3].map(i => reserveCall(run.id, "owner", `model-${i}`, "model", { i }, true)));
-  assert.equal(results.filter(r => r.status === "fulfilled").length, 2);
-  const first = (results[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof reserveCall>>>).value;
+  const accepted = results.flatMap((result, index) => result.status === "fulfilled" ? [{ value: result.value, i: index + 1 }] : []);
+  assert.equal(accepted.length, 2);
+  // Concurrent reservations may acquire the transaction in any order.
+  const first = accepted[0].value;
   await completeCall(run.id, "owner", first.call!.id, { answer: "saved" });
-  const reused = await reserveCall(run.id, "owner", "model-1", "model", { i: 1 }, true);
+  const reused = await reserveCall(run.id, "owner", `model-${accepted[0].i}`, "model", { i: accepted[0].i }, true);
   assert.ok(reused.existing); assert.equal((await db.agentRun.findUniqueOrThrow({ where: { id: run.id } })).modelCalls, 2);
   await db.agentRun.update({ where: { id: run.id }, data: { status: "STOPPED" } });
   await settleSpend(run.id, "owner", first.budgetId, { model: "unknown-model", success: true, statusCode: 200, responseBody: '{"cost_usd":0.15}' });
   const summary = summarizeBudget(await db.agentEvent.findMany({ where: { runId: run.id }, orderBy: { seq: "asc" } }));
   assert.equal(summary.actual, 0.15); assert.equal(summary.reserved, 0.4);
-  const second = (results[1] as PromiseFulfilledResult<Awaited<ReturnType<typeof reserveCall>>>).value;
+  const second = accepted[1].value;
   await settleSpend(run.id, "owner", second.budgetId, { model: "gpt-image-2.5-flare", category: "image_generation", success: true, statusCode: 200, requestBody: { quality: "low", size: "1024x1024" }, responseBody: '{"data":[{"url":"mock"}]}' });
   const settled = summarizeBudget(await db.agentEvent.findMany({ where: { runId: run.id }, orderBy: { seq: "asc" } }));
   assert.ok(settled.estimated > 0, "Delegated images retain their billing category");
