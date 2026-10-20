@@ -1,6 +1,6 @@
 # MxPage
 
-> Open-source, locally deployable AI e-commerce image workspace by Lingju Huijing (灵矩绘境 / MatrixInspire). MIT source license. Current documentation: v0.3.1, 2026-10-20.
+> Open-source, locally deployable AI e-commerce image workspace by Lingju Huijing (灵矩绘境 / MatrixInspire). MIT source license. Current documentation: v0.3.2, 2026-10-20.
 
 ## Quick answers
 
@@ -74,7 +74,7 @@
 - [Chinese README](https://github.com/ziguishian/MxPage/blob/main/README.md)
 - [English README](https://github.com/ziguishian/MxPage/blob/main/README.en.md)
 - [AGENTS.md contributor instructions](https://github.com/ziguishian/MxPage/blob/main/AGENTS.md)
-- [v0.3.1 release](https://github.com/ziguishian/MxPage/blob/main/docs/releases/v0.3.1.md)
+- [v0.3.2 release](https://github.com/ziguishian/MxPage/blob/main/docs/releases/v0.3.2.md)
 - [Latest downloads](https://github.com/ziguishian/MxPage/releases/latest)
 - [V4 recovery](https://github.com/ziguishian/MxPage/blob/main/docs/workflow-v4-reliability.md)
 - [Translation](https://github.com/ziguishian/MxPage/blob/main/docs/translation-workflow.md)
