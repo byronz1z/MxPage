@@ -60,7 +60,7 @@
 - Translation drafts stay on translation routes. IndexedDB saves files/checkpoints before upload; deterministic creation/upload keys make retries idempotent. Restored submissions check the existing batch before continuing. Local drafts exclude credentials and are removed after server acceptance.
 - Shared queue, stage/per-image timings, cost/stability charts, local profile and rolling 12-month usage heatmap.
 - CNY cost display uses editable rates/conversion; distinguishes returned amounts, estimates and unpriced requests. Not a final provider bill.
-- Distribution: Windows x64 ZIP, macOS Apple Silicon ZIP, macOS Intel ZIP and self-hosted source. Native CI smoke-tests SQLite/Prisma/sharp and local routes, without paid model calls.
+- Distribution: Windows x64 ZIP, macOS Apple Silicon ZIP and self-hosted source. The already-started v0.3.2 build also includes Intel Mac; future releases no longer produce Intel packages. Native CI smoke-tests SQLite/Prisma/sharp and local routes, without paid model calls.
 - Desktop requires no separate Node installation; user data stays in OS user-data folders. No commercial signing/Apple notarization; macOS uses ad-hoc signing.
 - Development: Node.js 24, npm ci, Next.js 14, React 18, TypeScript, Prisma/SQLite, Electron. Desktop builds must not overwrite live .next output.
 - Source startup reuses an existing workspace service, guards each build directory, rejects occupied ports without fallback, and preserves Next caches. Default binding is 127.0.0.1:3000; explicit hostname/port overrides remain supported.

@@ -58,10 +58,6 @@ jobs:
             platform: macos
             arch: arm64
             flags: --mac zip --arm64
-          - os: macos-15-intel
-            platform: macos
-            arch: x64
-            flags: --mac zip --x64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     env:
@@ -117,7 +113,7 @@ jobs:
       - name: Verify assets and create checksums
         run: |
           version="$(node -p "require('./package.json').version")"
-          for platform in windows-x64 macos-arm64 macos-x64; do
+          for platform in windows-x64 macos-arm64; do
             test -s "release/MxPage-${version}-${platform}.zip"
           done
           cd release
