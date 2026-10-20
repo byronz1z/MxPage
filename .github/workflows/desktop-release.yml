@@ -80,7 +80,17 @@ jobs:
       - run: npm run prisma:migrate
       - run: npm run check:agent-driver
       - run: npm run build:desktop
-      - run: npx --no-install electron-builder ${{ matrix.flags }} --publish never
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        run: npx --no-install electron-builder ${{ matrix.flags }} --publish never
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        run: |
+          # osx-sign scans the unpacked Node dependencies concurrently.
+          # Set both kernel and process limits in this disposable build runner.
+          sudo sysctl -w kern.maxfiles=262144 kern.maxfilesperproc=131072
+          ulimit -n 65536
+          npx --no-install electron-builder ${{ matrix.flags }} --publish never
       - run: npm run smoke:desktop
       - uses: actions/upload-artifact@v4
         with:
