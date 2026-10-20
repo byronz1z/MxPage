@@ -166,7 +166,7 @@ before(async () => {
       assert.ok(["gpt-6-luna", "text-B", "vision-B"].includes(body.model)); assert.equal(body.tools, undefined); assert.equal(body.response_format.type, "json_schema");
       assertStrictResponseSchema(body.response_format.json_schema.schema);
       const system = body.messages[0].content;
-      const kind = system.includes("商品补充候选模型") ? "INPUT_SUGGESTIONS" : system.includes("内容安排修复模型") ? "PLAN_CONTENT_REPAIR" : /商品规划模型|小红书图文规划模型/.test(system) ? "PLAN" : system.includes("视觉分镜模型") ? "ART_DIRECTION" : system.includes("整套页面检查模型") ? "SET_REVIEW" : "IMAGE_REVIEW";
+      const kind = system.includes("商品补充候选模型") ? "INPUT_SUGGESTIONS" : system.includes("内容安排修复模型") ? "PLAN_CONTENT_REPAIR" : /商品规划模型|小红书图文规划模型/.test(system) ? "PLAN" : /视觉分镜模型|XHS VISUAL DIRECTOR/.test(system) ? "ART_DIRECTION" : system.includes("整套页面检查模型") ? "SET_REVIEW" : "IMAGE_REVIEW";
       call = { kind, input: JSON.parse(body.messages[1].content[0].text), body, url: String(url) };
     }
     call.signal = init?.signal;
@@ -324,19 +324,37 @@ test("XHS freezes the requested single portrait card, saves post copy and resume
   const request = calls.find(c => c.kind === "GENERATE")!;
   const [width, height] = request.body.size.split("x").map(Number);
   assert.equal(width / height, 3 / 4);
+  const pack = (completed.input as any).xhsPromptPack;
+  assert.equal(pack.version, 1);
+  assert.equal(pack.brief, project.description);
+  const planning = calls.find(call => call.kind === "PLAN")!;
+  const direction = calls.find(call => call.kind === "ART_DIRECTION")!;
+  assert.match(JSON.stringify(planning.body), /XHS EDITORIAL PLANNING v1/);
+  assert.match(JSON.stringify(direction.body), /XHS VISUAL DIRECTOR v1/);
+  assert.doesNotMatch(JSON.stringify(direction.body), /你是视觉分镜模型|完整买家信息/);
+  assert.equal(direction.input.brief, project.description);
+  assert.match(request.body.prompt, /XHS SERIES MASTER v1/);
+  assert.match(request.body.prompt, /Series palette: #FFFFFF; #CCCCCC/);
+  assert.match(request.body.prompt, /Original copy 0/);
+  assert.equal(count("PLAN"), 1);
+  assert.equal(count("ART_DIRECTION"), 1);
   const before = calls.length;
   await db.project.update({ where: { id: project.id }, data: { description: "改成8张" } });
   await runtime.runWithProviderCredentials(credentials, () => service.createV4DetailRun(project.id, input, credentials));
   await resume(project.id, run!.id);
   assert.equal(calls.length, before);
+  assert.deepEqual((await db.detailRun.findUniqueOrThrow({ where: { id: run!.id } })).input, completed.input);
 });
 
 test("XHS defaults and count bounds are resolved locally before model calls", async () => {
   const { xhsImageCount } = await import("../lib/detail-runs/xhs");
   assert.equal(xhsImageCount({}, "做一篇收纳图文"), 5);
   assert.equal(xhsImageCount({}, "只做一张图"), 1);
+  assert.equal(xhsImageCount({}, "生成8张图文（共8页，第一张为封面，最后一张为总结）"), 8);
+  assert.equal(xhsImageCount({}, "生成八页，第一至第八页按顺序展开，倒数第二页讲风险"), 8);
+  assert.equal(xhsImageCount({}, "第一张是封面，第 2 页讲概念，最末一张做总结"), 5);
   assert.equal(xhsImageCount({ heroCount: 1, detailCount: 0 }, "主题"), 1);
-  for (const brief of ["9张", "10张", "0张", "做1张或者3张"]) assert.throws(() => xhsImageCount({}, brief));
+  for (const brief of ["9张", "10张", "0张", "做1张或者3张", "8张或者6页", "0页", "九页"]) assert.throws(() => xhsImageCount({}, brief));
   const p = await db.project.create({ data: { name: "Invalid social count", description: "只做10张", platform: "xiaohongshu", style: "generic_clean" } });
   await assert.rejects(runtime.runWithProviderCredentials(credentials, () => service.createV4DetailRun(p.id, { mode: "xhs", idempotencyKey: randomUUID() }, credentials)), /1–8/);
   assert.equal(calls.length, 0);

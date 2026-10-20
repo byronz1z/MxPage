@@ -5,7 +5,10 @@ export function xhsImageCount(raw: { heroCount?: number; detailCount?: number },
     count = (raw.heroCount ?? 0) + (raw.detailCount ?? 0);
   } else {
     const chinese: Record<string, number> = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
-    const counts = [...new Set([...brief.matchAll(/(?<![\d一二三四五六七八九十两])([0-9]+|[一二三四五六七八九十两]+)\s*张/g)].map(match => /^\d+$/.test(match[1]) ? Number(match[1]) : chinese[match[1]] ?? 99))];
+    const mentions = [...brief.matchAll(/(?<![\d一二三四五六七八九十两])([0-9]+|[一二三四五六七八九十两]+)\s*[张页]/g)]
+      // Page positions describe content, not the total number of cards.
+      .filter(match => !/(?:第|最后|最末|倒数)\s*$/.test(brief.slice(0, match.index)));
+    const counts = [...new Set(mentions.map(match => /^\d+$/.test(match[1]) ? Number(match[1]) : chinese[match[1]] ?? 99))];
     if (counts.length > 1) throw new Error("小红书要求中有多个不同的图片数量，请明确一个 1–8 张的数量。");
     count = counts[0] ?? 5;
   }

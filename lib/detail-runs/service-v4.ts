@@ -14,6 +14,7 @@ import { runWithProviderCredentials, type RequestProviderCredentials } from "@/l
 import { readStorageFile, saveGeneratedImage } from "@/lib/storage/asset-manager";
 import { detailRunInputSchema, socialPostSchema, type DetailRunInput } from "./contracts";
 import { xhsImageCount } from "./xhs";
+import { createXhsPromptPack, withXhsVisualMaster, type XhsPromptPack } from "./xhs-rules";
 import { invokeStructured } from "./structured-model";
 import { normalizeTypesetting, type V4TextBlock } from "./typesetting-v4";
 import { buildCommerceSystemPrompt } from "@/lib/ai/prompts/ecommerce-system";
@@ -147,6 +148,7 @@ export async function createV4DetailRun(projectId: string, raw: unknown, credent
   const heroModelId = input.heroCount ? selectModel(provider.models, "hero") : undefined;
   const imageModelId = input.detailCount ? selectModel(provider.models, "detail") : heroModelId!;
   const providerSnapshot = snapshotProvider(provider);
+  const xhsPromptPack = input.mode === "xhs" ? createXhsPromptPack(project.description || "") : undefined;
   const checkpoint: V4Checkpoint = { workflowVersion: 4, stage: "PREPARE", images: [], imageReviews: {}, answers: [], attempts: {}, timings: {}, ...(input.mode !== "xhs" ? { promptReview: { revision: 0, pages: [] } } : {}) };
   let run;
   try {
@@ -157,7 +159,7 @@ export async function createV4DetailRun(projectId: string, raw: unknown, credent
       const same = await tx.detailRun.findUnique({ where: { projectId_idempotencyKey: { projectId, idempotencyKey: input.idempotencyKey } } });
       if (same) return same;
       if (await tx.detailRun.findFirst({ where: { projectId, OR: [{ status: { in: active } }, { leaseToken: { not: null }, leaseUntil: { gt: new Date() } }] } })) throw new Error("当前项目仍有任务或已发出的请求正在收尾，请稍后继续。");
-      return tx.detailRun.create({ data: { projectId, idempotencyKey: input.idempotencyKey, input: json({ ...input, workflowVersion: 4, planningModelId, analysisModelId, heroModelId, imageModelId, providerSnapshot }), checkpoint: json(checkpoint), leaseUntil: new Date(Date.now() + 60000) } });
+      return tx.detailRun.create({ data: { projectId, idempotencyKey: input.idempotencyKey, input: json({ ...input, workflowVersion: 4, planningModelId, analysisModelId, heroModelId, imageModelId, providerSnapshot, xhsPromptPack }), checkpoint: json(checkpoint), leaseUntil: new Date(Date.now() + 60000) } });
     });
   } catch (error) {
     // Two browser retries can pass the read above at the same time. Treat the
@@ -297,7 +299,7 @@ async function executeV4(runId: string) {
   const lease = await claimRunLease(runId);
   if (!lease) return;
   const run = await prisma.detailRun.findUniqueOrThrow({ where: { id: runId } }).catch(async error => { await lease.release(); throw error; });
-  const input = run.input as unknown as DetailRunInput & { planningModelId: string; analysisModelId?: string; heroModelId?: string; imageModelId: string; editModelId: string; providerSnapshot?: ProviderSnapshot };
+  const input = run.input as unknown as DetailRunInput & { planningModelId: string; analysisModelId?: string; heroModelId?: string; imageModelId: string; editModelId: string; providerSnapshot?: ProviderSnapshot; xhsPromptPack?: XhsPromptPack };
   const cp = run.checkpoint as unknown as V4Checkpoint;
   cp.requests ??= {};
   cp.taskTiming = startTiming(cp.taskTiming);
@@ -363,22 +365,23 @@ async function executeV4(runId: string) {
     const visualImages = [...images, ...await Promise.all(styleImages.map(a => imageData(a.id, projectId)))];
     const referenceRoles = styleImages.length ? `参考图片按顺序：前${images.length}张是唯一商品身份与外观证据；其后${styleImages.length}张仅为风格参考，用于光线、色调、构图、细节放大和信息密度。风格参考中的文字、承诺、规格、商品结构不可作为事实或照抄；商品结构以原始商品图为准。` : "";
     await begin("PLAN");
+    const description = input.xhsPromptPack?.brief ?? current.description;
     const evidenceCatalog = [
-      { id: "user_description", kind: "description", text: current.description || "" },
+      { id: "user_description", kind: "description", text: description || "" },
       ...productImages.map(asset => ({ id: asset.id, kind: asset.type, fileName: asset.fileName })),
     ];
     const sectionSlots = Array.from({ length: input.heroCount + input.detailCount }, (_, sectionIndex) => ({ sectionIndex, kind: sectionIndex < input.heroCount ? "HERO" : "DETAIL" }));
     const coverageRules = input.mode === "xhs" ? "小红书图文仅按用户主题与配图数量创作，不要求电商八类内容覆盖；contentCoverage返回空数组。" : input.detailCount === 0
       ? "用户选择0张详情图，只生成指定数量的HERO，不得补充DETAIL。contentCoverage可引用承载对应内容的HERO下标；超出主图范围的模块标记not_applicable并说明用户仅要求主图，不因缺少详情图而要求补充信息。"
       : `${input.heroCount === 0 ? "用户选择0张主图，只生成指定数量的DETAIL，不得补充HERO。\n" : ""}${contentCoverageInstructions}`;
-    const planInput = JSON.stringify({ productName: current.name, description: current.description, platform: current.platform, language: input.language, userInstruction, answers: cp.answers, confirmedSupplementalAnswers: cp.confirmedSupplementalAnswers, evidenceCatalog, requestedHeroCount: input.heroCount, requestedDetailCount: input.detailCount, sectionSlots, contentCoverageRules: coverageRules, supplementalInputRules: supplementalInputInstructions });
+    const planInput = JSON.stringify({ productName: current.name, description, platform: current.platform, language: input.language, userInstruction, answers: cp.answers, confirmedSupplementalAnswers: cp.confirmedSupplementalAnswers, evidenceCatalog, requestedHeroCount: input.heroCount, requestedDetailCount: input.detailCount, sectionSlots, contentCoverageRules: coverageRules, supplementalInputRules: supplementalInputInstructions });
     const confirmedEstimates = cp.confirmedSupplementalAnswers?.some(answer => answer.basis === "model_estimate") === true;
     let plan = cp.plan;
     const requestPlanSchema: z.ZodType<WorkflowPlan> = input.mode === "xhs" ? xhsPlanSchema : planSchema;
     // Planning includes image input and complete page copy. Responses may send
     // headers early while still generating; allow three minutes for completion.
     if (!plan) plan = await requestOnce("PLAN", requestId => invokeStructured({ ...textSettings(input.providerSnapshot || {}), apiKey, baseUrl: provider.baseUrl, model: input.planningModelId, schema: requestPlanSchema, system: input.mode === "xhs"
-      ? `你是小红书图文规划模型。只返回 JSON。按用户主题创作标题、正文、3–8个标签和恰好${input.detailCount}张3:4竖版配图的完整文案，全部 sections.kind 为 DETAIL，不生成 HERO。post 包含 title、caption、hashtags、language，遵守用户字数与语言要求；productName 是主题名。不要编造个人经历、事实数据、品牌功效或来源。普通知识/插画创作不需要商品材质、尺寸等参数，contentCoverage 返回空数组，不套用电商详情页八模块。只有确实阻止主题创作的信息才列入 missingFields；无需补充则为空。sections[].copy 写该图可见的完整文字，evidence 只用 evidenceCatalog 内的 ID。`
+      ? `${input.xhsPromptPack?.planning || ""}\n你是小红书图文规划模型。只返回 JSON。按用户主题创作标题、正文、3–8个标签和恰好${input.detailCount}张3:4竖版配图的完整文案，全部 sections.kind 为 DETAIL，不生成 HERO。post 包含 title、caption、hashtags、language，遵守用户字数与语言要求；productName 是主题名。不要编造个人经历、事实数据、品牌功效或来源。普通知识/插画创作不需要商品材质、尺寸等参数，contentCoverage 返回空数组，不套用电商详情页八模块。只有确实阻止主题创作的信息才列入 missingFields；无需补充则为空。sections[].copy 写该图可见的完整文字，evidence 只用 evidenceCatalog 内的 ID。`
       : `${buildCommerceSystemPrompt(current.platform, ["hero_search", "feature_proof", "lifestyle", "material_closeup", "specification", "trust", "summary"])}\n你是商品规划模型。只返回 JSON。写出有证据的商品事实、买家价值和完整的逐屏内容；未知字段放入 missingFields，不要设计字体、背景或工具调用。sections[].copy 是最终需要呈现的完整文案，包含标题、解释、标签与已知参数，每条独立文案换行，不写Markdown装饰或制作说明，不用只有标题的提纲代替内容。\n${input.detailCount === 0 ? coverageRules : "完整详情任务的 contentCoverage 逐项交代八类内容：covered 必须引用真实承载该内容的详情页下标（全套从0开始，不能只引用HERO）；needs_input 写明具体缺失资料；not_applicable 写明产品或用户范围依据。少屏可以合并内容模块，不允许用“简洁”“留白”作为省略理由。缺失的用户要求应进入missingFields。"}\n证据引用规则：sections[].evidence 只能填写 evidenceCatalog 中的 id（user_description 或真实资产 ID），不要填写自然语言证据句。`, input: planInput, images, timeoutMs: 180000, maxAttempts: 1, requestId, monitor: { projectId, runId, operation: "v4_plan" } }), result => { cp.plan = result; });
     if (!plan) throw new Error("规划结果为空");
     if (confirmedEstimates) plan = { ...plan, sections: plan.sections.map(section => ({ ...section, title: customerFacingCopy(section.title) || "商品信息", copy: customerFacingCopy(section.copy) })) };
@@ -462,7 +465,7 @@ async function executeV4(runId: string) {
     });
     await end("PLAN");
     await begin("ART_DIRECTION");
-    const art = cp.artDirection ?? await requestOnce("ART_DIRECTION", requestId => invokeStructured({ ...textSettings(input.providerSnapshot || {}), apiKey, baseUrl: provider.baseUrl, model: input.planningModelId, schema: directionSchema, system: `${buildCommerceSystemPrompt(current.platform, ["hero_search", "feature_proof", "lifestyle", "material_closeup", "specification", "trust", "summary"])}\n${confirmedAnswerCopyRules}\n你是视觉分镜模型。只返回完整 JSON。根据完整内容任务设计每张图的构图、光线、场景、文字和信息模块，sectionIndex必须对应规划从0开始的下标。plan.sections[].copy 是内容基础，可以自然润色标题、调整句式、标点和换行，无需逐字复刻；保持完整买家信息、参数标签、数值、单位和尺寸表，不把完整页面简化成只有标题。不要删除页面，不要编造规格。每张最终prompt必须完整描述主体、镜头、环境、光线、配色、细节/信息模块与排版，最终可见文字以textBlocks为准；不能只写标题或依赖前一张图。按内容安排场景、微距、标注、信息图与规格表，避免所有页面同一背景加整件产品。`, input: JSON.stringify({ plan, platform: current.platform, language: input.language, userInstruction, referenceRoles }), images: visualImages, timeoutMs: Math.max(90000, Math.min(180000, expected * 15000)), maxAttempts: 1, requestId, monitor: { projectId, runId, operation: "v4_art_direction" } }), result => { cp.artDirection = result; });
+    const art = cp.artDirection ?? await requestOnce("ART_DIRECTION", requestId => invokeStructured({ ...textSettings(input.providerSnapshot || {}), apiKey, baseUrl: provider.baseUrl, model: input.planningModelId, schema: directionSchema, system: input.xhsPromptPack?.artDirection || `${buildCommerceSystemPrompt(current.platform, ["hero_search", "feature_proof", "lifestyle", "material_closeup", "specification", "trust", "summary"])}\n${confirmedAnswerCopyRules}\n你是视觉分镜模型。只返回完整 JSON。根据完整内容任务设计每张图的构图、光线、场景、文字和信息模块，sectionIndex必须对应规划从0开始的下标。plan.sections[].copy 是内容基础，可以自然润色标题、调整句式、标点和换行，无需逐字复刻；保持完整买家信息、参数标签、数值、单位和尺寸表，不把完整页面简化成只有标题。不要删除页面，不要编造规格。每张最终prompt必须完整描述主体、镜头、环境、光线、配色、细节/信息模块与排版，最终可见文字以textBlocks为准；不能只写标题或依赖前一张图。按内容安排场景、微距、标注、信息图与规格表，避免所有页面同一背景加整件产品。`, input: JSON.stringify({ plan, platform: current.platform, language: input.language, userInstruction, referenceRoles, brief: input.xhsPromptPack?.brief }), images: visualImages, timeoutMs: Math.max(90000, Math.min(180000, expected * 15000)), maxAttempts: 1, requestId, monitor: { projectId, runId, operation: "v4_art_direction" } }), result => { cp.artDirection = result; });
     const savedSections = await prisma.pageSection.findMany({ where: { projectId, sectionKey: { in: plan.sections.map((_, index) => `v4-${index}`) } }, orderBy: { order: "asc" } });
     if (art.sections.length !== expected) throw new Error("视觉分镜数量与页面数量不一致");
     const readableCopy = prepareReadableCopy(plan.sections, confirmedEstimates ? art.sections.map(cleanCustomerDirection) : art.sections);
@@ -470,7 +473,10 @@ async function executeV4(runId: string) {
     cp.artDirection = normalizedArt;
     cp.contentWarnings = [...new Set([...(cp.contentWarnings || []), ...readableCopy.warnings])];
     if (cp.lastError?.stage === "ART_DIRECTION") cp.lastError = undefined;
-    const sections = materializeImagePrompts(savedSections, normalizedArt.sections, confirmedEstimates).map(section => ({ ...section, visualPrompt: referenceRoles ? `${referenceRoles}\n${section.visualPrompt}` : section.visualPrompt }));
+    const renderDirections = input.xhsPromptPack
+      ? normalizedArt.sections.map(section => ({ ...section, prompt: withXhsVisualMaster(section.prompt, normalizedArt, input.xhsPromptPack!) }))
+      : normalizedArt.sections;
+    const sections = materializeImagePrompts(savedSections, renderDirections, confirmedEstimates).map(section => ({ ...section, visualPrompt: referenceRoles ? `${referenceRoles}\n${section.visualPrompt}` : section.visualPrompt }));
     if (cp.promptReview) {
       if (!cp.promptReview.pages.length) cp.promptReview = { revision: cp.promptReview.revision + 1, pages: sections.map(section => ({ sectionId: section.id, title: section.title, kind: section.type === "HERO" ? "HERO" : "DETAIL", prompt: section.visualPrompt })) };
       if (sections.length !== cp.promptReview.pages.length || sections.some((section, index) => section.id !== cp.promptReview!.pages[index].sectionId)) throw new PromptReviewConflict("页面列表与已保存提示词不一致，未发起图片请求。");
