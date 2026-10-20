@@ -894,6 +894,30 @@ test("sets larger than twelve are fully checked in overlapping groups and comple
   assert.equal(completed.status, "COMPLETED"); assert.equal(count("SET_REVIEW"), 3); assert.equal(count("GENERATE"), 0);
 });
 
+test("successful review recovery clears stale timeout errors even when image quality remains PARTIAL", async () => {
+  const fixture = await seed({ generated: [0, 1, 2, 3, 4, 5, 6] });
+  respond = async call => call.kind === "IMAGE_REVIEW"
+    ? completion({ passed: false, issues: [{ kind: "copy", severity: "error", message: "Check product details" }] })
+    : call.kind === "SET_REVIEW" ? Response.json({ error: { message: "Timed out" } }, { status: 504 }) : success(call);
+  const pending = await resume(fixture.projectId, fixture.runId);
+  assert.match(pending.error || "", /超时/);
+  const before = calls.length;
+  respond = success;
+  const recovered = await resume(fixture.projectId, fixture.runId, true);
+  assert.equal(recovered.status, "PARTIAL");
+  assert.equal(recovered.error, null); assert.equal(cpOf(recovered).lastError, undefined);
+  assert.equal(calls.length, before + 1); assert.equal(count("GENERATE"), 0);
+  assert.equal(cpOf(recovered).setReview?.passed, true);
+  assert.equal(cpOf(recovered).images[0].check?.passed, false);
+
+  // Existing saved runs can contain the old error; reading them must not call the provider.
+  const checkpoint = { ...cpOf(recovered), lastError: cpOf(pending).lastError };
+  await db.detailRun.update({ where: { id: fixture.runId }, data: { checkpoint: JSON.parse(JSON.stringify(checkpoint)), error: pending.error } });
+  const displayed = await service.getV4DetailRun(fixture.projectId, fixture.runId);
+  assert.equal(displayed?.error, null); assert.equal(cpOf(displayed!).lastError, undefined);
+  assert.equal(displayed?.status, "PARTIAL"); assert.equal(calls.length, before + 1);
+});
+
 test("simultaneous resume requests share one worker and never duplicate image dispatch", async () => {
   const fixture = await seed();
   await Promise.all([service.controlV4DetailRun(fixture.projectId, fixture.runId, "resume", {}, credentials), service.controlV4DetailRun(fixture.projectId, fixture.runId, "resume", {}, credentials)]);

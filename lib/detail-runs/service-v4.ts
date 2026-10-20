@@ -94,6 +94,9 @@ function isTimeout(error: unknown) {
 function checksComplete(cp: V4Checkpoint) {
   return cp.images.length > 0 && cp.images.every(image => image.assetId && image.state === "checked" && image.check?.passed === true && !image.check.issues.some(issue => issue.severity === "error")) && cp.setReview?.passed === true && cp.setReview.issues.length === 0;
 }
+function hasResolvedReviewError(cp: V4Checkpoint) {
+  return ["IMAGE_REVIEW", "SET_REVIEW"].includes(cp.lastError?.stage || "") && cp.images.length > 0 && cp.images.every(image => image.assetId && image.check) && !!cp.setReview;
+}
 
 export async function getV4DetailRun(projectId: string, runId?: string) {
   await prisma.detailRun.updateMany({ where: { projectId, ...(runId ? { id: runId } : {}), status: { in: ["PENDING", "RUNNING"] }, OR: [{ leaseUntil: { lte: new Date() } }, { leaseUntil: null }] }, data: { status: "INTERRUPTED", stage: "运行已中断，可继续", leaseToken: null, leaseUntil: null } });
@@ -108,13 +111,15 @@ export async function getV4DetailRun(projectId: string, runId?: string) {
     run = await prisma.detailRun.findUniqueOrThrow({ where: { id: run.id } });
   }
   const safeCheckpoint = { ...checkpoint, ...(checkpoint.lastError ? { lastError: { ...checkpoint.lastError, message: requestErrorMessage({ message: checkpoint.lastError.message }) } } : {}) };
+  const resolvedReviewError = ["COMPLETED", "PARTIAL"].includes(run.status) && selectedImagesMatch && hasResolvedReviewError(checkpoint);
+  if (resolvedReviewError) safeCheckpoint.lastError = undefined;
   if (run.status === "WAITING_INPUT" && checkpoint.workflowVersion === 4) {
     // Recheck saved candidates locally: a corrected validator must not leave an
     // old diagnostic blocking usable answers or require another paid request.
     const requiredFields = [...new Set([...(checkpoint.plan?.missingFields || []).map(field => field.field), ...incompleteSupplementalEstimates(checkpoint.confirmedSupplementalAnswers).flatMap(answer => answer.fields)])];
     safeCheckpoint.supplementalQuestionIssue = supplementalQuestionIssues(normalizeSupplementalQuestions(checkpoint.questions), requiredFields) || undefined;
   }
-  return { id: run.id, projectId, status: run.status, stage: run.stage, input: run.input, checkpoint: json(safeCheckpoint), error: run.error ? requestErrorMessage({ message: run.error }) : null, createdAt: run.createdAt, updatedAt: run.updatedAt, draining: run.status === "CANCELED" && !!run.leaseToken && !!run.leaseUntil && run.leaseUntil.getTime() > Date.now() };
+  return { id: run.id, projectId, status: run.status, stage: run.stage, input: run.input, checkpoint: json(safeCheckpoint), error: !resolvedReviewError && run.error ? requestErrorMessage({ message: run.error }) : null, createdAt: run.createdAt, updatedAt: run.updatedAt, draining: run.status === "CANCELED" && !!run.leaseToken && !!run.leaseUntil && run.leaseUntil.getTime() > Date.now() };
 }
 
 export async function createV4DetailRun(projectId: string, raw: unknown, credentials: RequestProviderCredentials) {
@@ -517,7 +522,8 @@ async function executeV4(runId: string) {
           if (saved) { delete cp.setReviewGroups[key]; delete cp.requests![key]; }
           try {
             const groupImages = await Promise.all(reviewImages.map(image => imageData(image.assetId!, projectId)));
-            await requestOnce(key, requestId => invokeStructured({ ...textSettings(input.providerSnapshot || {}), apiKey, baseUrl: provider.baseUrl, model: input.analysisModelId || input.planningModelId, schema: setReviewSchema, system: `你是整套页面检查模型。只返回 JSON。标题同义改写、标点和换行差异不算缺陷；只检查意思丢失、错误参数或不可读文字。依据plan.contentCoverage和逐屏copy检查实际图片的信息覆盖、商品一致性、重复构图、文字与连续性。imageOrder 给出本组图片的全套 sectionIndex，issues.sectionIndexes 必须引用这些全套下标。超过12张时分组检查，本组看不到的图片不要猜测。视觉统一不能以删除内容换取；只有内容错误、遮挡或不可读才指出具体问题。不删除图片，不要求全套改成纯色背景。${confirmedAnswerCopyRules}缺少内部来源说明不算图片缺陷。`, input: JSON.stringify({ plan: cp.plan, artDirection: cp.artDirection, imageOrder: reviewImages.map((image, index) => ({ sectionIndex: start + index, title: image.title })) }), images: groupImages, timeoutMs: 60000, maxAttempts: 1, requestId, monitor: { projectId, runId, operation: "v4_set_review" } }), result => { cp.setReviewGroups![key] = { assetIds: groupAssets, result }; });
+            // Full-plan visual checks need the same bounded wait as planning; timeout still requires explicit retry.
+            await requestOnce(key, requestId => invokeStructured({ ...textSettings(input.providerSnapshot || {}), apiKey, baseUrl: provider.baseUrl, model: input.analysisModelId || input.planningModelId, schema: setReviewSchema, system: `你是整套页面检查模型。只返回 JSON。标题同义改写、标点和换行差异不算缺陷；只检查意思丢失、错误参数或不可读文字。依据plan.contentCoverage和逐屏copy检查实际图片的信息覆盖、商品一致性、重复构图、文字与连续性。imageOrder 给出本组图片的全套 sectionIndex，issues.sectionIndexes 必须引用这些全套下标。超过12张时分组检查，本组看不到的图片不要猜测。视觉统一不能以删除内容换取；只有内容错误、遮挡或不可读才指出具体问题。不删除图片，不要求全套改成纯色背景。${confirmedAnswerCopyRules}缺少内部来源说明不算图片缺陷。`, input: JSON.stringify({ plan: cp.plan, artDirection: cp.artDirection, imageOrder: reviewImages.map((image, index) => ({ sectionIndex: start + index, title: image.title })) }), images: groupImages, timeoutMs: 180000, maxAttempts: 1, requestId, monitor: { projectId, runId, operation: "v4_set_review" } }), result => { cp.setReviewGroups![key] = { assetIds: groupAssets, result }; });
           } catch (error) {
             if (error instanceof RunHalted) throw error;
             cp.lastError = { stage: "SET_REVIEW", code: isTimeout(error) ? "TIMEOUT" : "REVIEW_FAILED", message: requestErrorMessage(error, "整套检查未完成，图片已保留，请人工核对。"), retryable: false }; await persist();
@@ -535,7 +541,7 @@ async function executeV4(runId: string) {
     const complete = checksComplete(cp);
     const reviewPending = cp.images.some(image => image.assetId && !image.check) || !cp.setReview;
     cp.retryAuthorized = [];
-    if (complete) cp.lastError = undefined;
+    if (complete || hasResolvedReviewError(cp)) cp.lastError = undefined;
     cp.stage = complete ? "COMPLETED" : "PARTIAL";
     cp.taskTiming = touchTiming(cp.taskTiming!, true);
     await lease.transaction(async tx => { await tx.detailRun.update({ where: { id: runId }, data: {

@@ -25,7 +25,7 @@
 
 ## 主要功能
 
-稳定性优化：任务记录区分失败、结果未确认和待查询；新单图/编辑/小红书异步任务支持查询原结果。图像选项按已知模型能力限制并标注证据；Agent 可设金额预算，区分实报、估算与未知费用。日志尾读与空闲轮询已优化。详见 [优化与验收范围](docs/optimization-acceptance.md)，自动回归使用模拟接口；另获授权的 CloseAI、EvoLink 真实调用及剩余验收项见[真实验收记录](docs/provider-live-acceptance.md)。
+稳定性优化：任务记录区分失败、结果未确认和待查询；新单图/编辑/小红书异步任务支持查询原结果。图像选项按已知模型能力限制并标注证据；Agent 可设金额预算，区分实报、估算与未知费用。日志尾读与空闲轮询已优化。详见 [优化与验收范围](docs/optimization-acceptance.md)，自动回归使用模拟接口；另获授权的 CloseAI、EvoLink 真实调用覆盖单商品、批量详情、编辑、整套与独立翻译、小红书及 Agent 文件导出，具体模型和边界见[真实验收记录](docs/provider-live-acceptance.md)。
 
 新增 **[Agent 工作台](docs/agent-workspace.md)**（`/agent`）：LangGraph.js + Deep Agents 通用对话、确认后执行的研究/文件/电商工具、会话与检查点、流式进度、成果预览和下载。设置在 `/settings/agent`，原一键详情页继续保留，V4 固定流程与新 Agent 独立。
 
