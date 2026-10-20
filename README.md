@@ -303,3 +303,11 @@ tests/                  隔离的单元及流程测试
 ### 交流社区
 
 <img width="360" alt="MxPage 交流二维码" src="https://github.com/user-attachments/assets/028cfd0b-a813-4655-9b49-aa9ab6619c7d" />
+
+## Contributors
+
+Thanks to everyone who has contributed to this project!
+
+<a href="https://github.com/你的用户名/你的仓库/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=你的用户名/你的仓库" />
+</a>
