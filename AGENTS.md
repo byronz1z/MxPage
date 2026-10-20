@@ -81,10 +81,11 @@ Read this file first when working on the repository. Product facts and links are
   tests and V4 reliability documentation take precedence over old Agent designs.
 - Public deployment metadata is optional via `NEXT_PUBLIC_SITE_URL`. Private workspace
   pages must stay `noindex`; do not include project data in sitemap/structured metadata.
-- Desktop releases are built on native Windows, macOS ARM64 and macOS x64 runners.
+- Future desktop releases are built on native Windows x64 and macOS ARM64 runners.
+  Intel Mac is no longer a release target; keep historical downloads intact.
   Native Prisma/sharp binaries must match each package. Publish only after smoke tests.
 - Release workflow: `.github/workflows/desktop-release.yml`; version tags must match
-  `package.json` and the release-note filename. Include all three ZIPs and SHA256 sums.
+  `package.json` and the release-note filename. Include both ZIPs and SHA256 sums.
 - The authoritative publishing repository is `https://github.com/ziguishian/MxPage`.
   Check the target remote before pushing; this checkout may have other remotes.
 

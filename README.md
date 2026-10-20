@@ -223,7 +223,7 @@ npm run dist:mac         # macOS 本机打包当前架构 ZIP
 npm run smoke:desktop   # 包内 SQLite、Prisma、sharp 与页面冒烟验证
 ```
 
-[发布流水线](.github/workflows/desktop-release.yml)在原生 Windows、macOS ARM64、macOS Intel 环境构建并验证后，发布三个 ZIP 与 SHA256 校验文件。开发者数据库、密钥、测试输出和生成报告不进入发布包。
+[发布流水线](.github/workflows/desktop-release.yml)后续只在原生 Windows x64 和 macOS Apple Silicon 环境构建并验证，全部通过后发布两个 ZIP 与 SHA256 校验文件。v0.3.2 已启动的 Intel Mac 构建仍按原流程完成，后续不再提供新 Intel Mac 包。开发者数据库、密钥、测试输出和生成报告不进入发布包。
 
 ```text
 app/                    页面与 API
