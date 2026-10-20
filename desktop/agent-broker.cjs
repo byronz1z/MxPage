@@ -23,7 +23,7 @@ function createAgentBroker({ getWindow, getServerUrl }) {
   async function connect(command, args, extraEnv = {}) {
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
     const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
-    const connection = new Client({ name: "MxPageDesktop", version: "0.3.0" });
+    const connection = new Client({ name: "MxPageDesktop", version: require("../package.json").version });
     // Do not inherit model/API keys, arbitrary NODE_OPTIONS, shell startup files or tracing credentials.
     const env = Object.fromEntries(["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA"].filter(k => process.env[k]).map(k => [k, process.env[k]]));
     const transport = new StdioClientTransport({ command, args, env: { ...env, ...extraEnv }, stderr: "pipe" });

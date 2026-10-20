@@ -48,5 +48,5 @@ export async function waitAgentCreation(runId: string, token: string, projectId:
     detail = await getDetailRun(projectId, detail.id);
   }
   await prisma.agentEvent.create({ data: { runId, type: "creation", data: json({ projectId, detailRunId: detail.id, status: detail.status }) } });
-  return { projectId, detailRunId: detail.id, status: detail.status, questions: detail.checkpoint?.questions, url: `/projects/${projectId}/editor`, note: detail.status === "WAITING_INPUT" ? "需要用户补充商品信息，请展示问题并等待用户回答。" : undefined };
+  return { projectId, detailRunId: detail.id, status: detail.status, questions: detail.checkpoint?.questions, url: `/projects/${projectId}/editor`, note: detail.status === "WAITING_PROMPTS" ? "请用户打开作品，预览并确认每页提示词后再生成。不能替用户确认。" : detail.status === "WAITING_INPUT" ? "需要用户补充商品信息，请展示问题并等待用户回答。" : undefined };
 }

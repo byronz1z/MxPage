@@ -14,6 +14,8 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { ProductPhonePreview, ProductImage, imageReview } from "./product-phone-preview";
 import { listingFields, type ListingPreview } from "./taobao-product-preview";
 import { CommercePlanSummary } from "./commerce-plan-summary";
+import { PromptReviewPanel } from "./prompt-review-panel";
+import type { PromptReview } from "@/lib/detail-runs/prompt-review";
 import { SupplementalInfoDialog } from "./supplemental-info-dialog";
 import { normalizeSupplementalQuestions, supplementalQuestionSetId } from "@/lib/detail-runs/supplemental-input";
 import { CommerceContentCoverage } from "./commerce-content-coverage";
@@ -28,8 +30,8 @@ import type { RunCheckpoint } from "@/lib/detail-runs/contracts";
 import { designIssueLabel } from "@/lib/detail-runs/art-direction";
 import { ApiRequestError, fetchApiProgress, readApiResponse as read, requestErrorMessage } from "@/lib/utils/request-error";
 
-type Run = { createdAt?: string; updatedAt?: string; id: string; status: string; stage: string; error?: string; draining?: boolean; input?: { heroCount?: number; detailCount?: number }; timingHistory?: TimingHistoryEntry[]; checkpoint: RunCheckpoint & { workflowVersion?: number; setReviewAssetIds?: string[]; requests?: Record<string, { state: string; upstreamTask?: import("@/lib/ai/provider-client").UpstreamImageTask }>; requestTimings?: Record<string, RequestTiming> } };
-const workflowStageLabels: Record<string, string> = { INPUT_SUGGESTIONS: "推断商品补充选项", PREPARE: "准备商品资料", PLAN: "规划商品内容", WAITING_INPUT: "等待补充信息", ART_DIRECTION: "设计整套视觉分镜", GENERATE: "生成商品图片", IMAGE_REVIEW: "检查图片质量", SET_REVIEW: "检查整套页面" };
+type Run = { createdAt?: string; updatedAt?: string; id: string; status: string; stage: string; error?: string; draining?: boolean; input?: { heroCount?: number; detailCount?: number }; timingHistory?: TimingHistoryEntry[]; checkpoint: RunCheckpoint & { workflowVersion?: number; promptReview?: PromptReview; setReviewAssetIds?: string[]; requests?: Record<string, { state: string; upstreamTask?: import("@/lib/ai/provider-client").UpstreamImageTask }>; requestTimings?: Record<string, RequestTiming> } };
+const workflowStageLabels: Record<string, string> = { INPUT_SUGGESTIONS: "推断商品补充选项", PREPARE: "准备商品资料", PLAN: "规划商品内容", WAITING_INPUT: "等待补充信息", WAITING_PROMPTS: "等待确认逐页提示词", ART_DIRECTION: "设计整套视觉分镜", GENERATE: "生成商品图片", IMAGE_REVIEW: "检查图片质量", SET_REVIEW: "检查整套页面" };
 const post = (url: string, data: unknown) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }).then(read);
 
 export function DetailWorkspace({ initialProject }: { initialProject: any }) {
@@ -96,7 +98,7 @@ export function DetailWorkspace({ initialProject }: { initialProject: any }) {
   useEffect(() => {
     if (run?.status === "WAITING_INPUT") setInputOpen(true);
   }, [run?.id, run?.status]);
-  const active = !loaded || Boolean(run && (["PENDING", "RUNNING", "WAITING_INPUT"].includes(run.status) || run.draining));
+  const active = !loaded || Boolean(run && (["PENDING", "RUNNING", "WAITING_INPUT", "WAITING_PROMPTS"].includes(run.status) || run.draining));
   const sections = [...project.sections].sort((a, b) => a.order - b.order) as any[];
   const heroes = sections.filter(s => s.type === "HERO");
   const details = sections.filter(s => s.type !== "HERO");
@@ -220,6 +222,7 @@ export function DetailWorkspace({ initialProject }: { initialProject: any }) {
       <div className="flex items-center justify-between gap-3 text-sm"><span className="flex items-center gap-2">{run.status === "RUNNING" && <Loader2 className="h-4 w-4 animate-spin"/>}{workflowStageLabels[run.stage] || run.stage}</span><span className="shrink-0 tabular-nums text-muted-foreground">{generated}/{totalImages} 张</span></div>
       <progress aria-label="生成进度" className="block h-2 w-full" max={totalImages} value={generated}/>
     </section>}
+    {run?.status === "WAITING_PROMPTS" && run.checkpoint.promptReview && <PromptReviewPanel key={run.id} review={run.checkpoint.promptReview} busy={busy} onSubmit={control}/>}
     <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
       <div className="min-w-0 space-y-6">
         <div className="flex flex-wrap gap-2" role="group" aria-label="预览方式"><Button variant={view === "phone" ? "default" : "outline"} aria-pressed={view === "phone"} onClick={() => setView("phone")}><Smartphone className="mr-2 h-4 w-4"/>手机预览</Button><Button variant={view === "images" ? "default" : "outline"} aria-pressed={view === "images"} onClick={() => setView("images")}><LayoutGrid className="mr-2 h-4 w-4"/>图片列表</Button></div>
@@ -277,7 +280,7 @@ export function DetailWorkspace({ initialProject }: { initialProject: any }) {
             questionIssue={run.checkpoint.supplementalQuestionIssue} onPrepareSuggestions={() => control("suggestions")}
             onSubmit={submission => control("answers", submission)} onUpload={upload}
           />}
-    </section> : loaded && !sections.some(s => s.imageUrl) && <section className="space-y-4 rounded-2xl border p-5"><p>素材已保存，启动后将自动完成分析、规划和整套图片生成。</p><Button disabled={busy} onClick={() => start()}>{busy ? "检测并启动中…" : "一键生成详情页"}</Button><label className="block text-sm">补充素材<input type="file" accept="image/png,image/jpeg,image/webp" multiple disabled={busy} onChange={e => { void upload(e.target.files); e.target.value = ""; }}/></label></section>}
+    </section> : loaded && !sections.some(s => s.imageUrl) && <section className="space-y-4 rounded-2xl border p-5"><p>素材已保存，启动后将完成分析和规划；预览并确认每页提示词后，再生成整套图片。</p><Button disabled={busy} onClick={() => start()}>{busy ? "检测并启动中…" : "一键生成详情页"}</Button><label className="block text-sm">补充素材<input type="file" accept="image/png,image/jpeg,image/webp" multiple disabled={busy} onChange={e => { void upload(e.target.files); e.target.value = ""; }}/></label></section>}
     <Dialog.Root open={Boolean(expandedSection?.imageUrl)} onOpenChange={open => { if (!open) setExpanded(null); }}><Dialog.Portal><Dialog.Overlay className="fixed inset-0 z-50 bg-black/75"/><Dialog.Content onCloseAutoFocus={event => { event.preventDefault(); expandedTrigger.current?.focus(); }} className="fixed inset-3 z-50 flex min-h-0 flex-col rounded-2xl border bg-background p-4 shadow-xl sm:inset-8"><div className="mb-3 flex items-center justify-between gap-3"><div className="min-w-0"><Dialog.Title className="truncate font-medium">{expandedSection?.title}</Dialog.Title><Dialog.Description className="mt-1 text-xs text-muted-foreground">当前生效版本 · 按原比例显示，可滚动查看 · Esc 关闭</Dialog.Description></div><Dialog.Close asChild><Button variant="ghost" aria-label="关闭原图"><X size={20}/></Button></Dialog.Close></div><div className="min-h-0 flex-1 overflow-auto rounded-lg bg-muted/30">{expandedSection?.imageUrl && <img src={expandedSection.imageUrl} alt={expandedSection.title} className="mx-auto block h-auto max-w-full"/>}</div></Dialog.Content></Dialog.Portal></Dialog.Root>
   </div>;
 }

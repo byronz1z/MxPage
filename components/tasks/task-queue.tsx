@@ -24,7 +24,7 @@ function TaskItem({ item, onRemove, onNavigate }: { item: TaskQueueItem; onRemov
     <div className="flex items-start gap-2">
       <Icon aria-hidden="true" className={cn("mt-0.5 h-4 w-4 shrink-0", running ? "animate-spin motion-reduce:animate-none" : attention ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400")} />
       <div className="min-w-0 flex-1"><p title={item.title} className="truncate text-sm font-medium">{item.title}</p><p className="mt-1 text-xs leading-5 text-muted-foreground">{queueKindLabels[item.kind]} · {item.message || taskStatusLabels[item.status]}</p></div>
-      {!running && item.status !== "WAITING_INPUT" && <button type="button" aria-label={`移除队列记录：${item.title}`} onClick={onRemove} className="rounded-md p-1 text-muted-foreground hover:bg-accent"><X size={14} /></button>}
+      {!running && !["WAITING_INPUT", "WAITING_PROMPTS"].includes(item.status) && <button type="button" aria-label={`移除队列记录：${item.title}`} onClick={onRemove} className="rounded-md p-1 text-muted-foreground hover:bg-accent"><X size={14} /></button>}
     </div>
     <TaskTimer timing={item.elapsedMs === undefined ? projectTaskDuration(item) : { elapsedMs: item.elapsedMs, timerStartedAt: taskIsRunning(item) ? item.timerStartedAt : undefined, timingEstimated: item.timingEstimated }}/>
     <div className="space-y-1.5"><div className="flex justify-between gap-3 text-xs"><span>{item.total ? `${item.completed}/${item.total} ${item.unit}${item.failed ? ` · ${item.failed} ${item.unit}未完成` : ""}` : "准备中"}</span><span>{item.total ? `${percent}%` : ""}</span></div>
@@ -32,7 +32,7 @@ function TaskItem({ item, onRemove, onNavigate }: { item: TaskQueueItem; onRemov
     {item.error && <p className="line-clamp-3 text-xs leading-5 text-destructive" title={item.error}>{item.error}</p>}
     {(!!item.pendingQuery || !!item.uncertain) && <p className="text-xs text-amber-700 dark:text-amber-400">{item.pendingQuery ? `${item.pendingQuery} 项等待查询上游结果。` : ""}{item.uncertain ? `${item.uncertain} 项结果未确认，请先核对调用记录，再决定是否重新提交。` : ""}</p>}
     <ImageTaskAction item={item}/>
-    <Link href={item.href} onClick={onNavigate} className="inline-flex text-xs underline underline-offset-4">{item.status === "WAITING_INPUT" ? "补充信息 / 继续任务" : running ? "查看任务" : "查看结果 / 处理任务"}</Link>
+    <Link href={item.href} onClick={onNavigate} className="inline-flex text-xs underline underline-offset-4">{item.status === "WAITING_PROMPTS" ? "预览并确认提示词" : item.status === "WAITING_INPUT" ? "补充信息 / 继续任务" : running ? "查看任务" : "查看结果 / 处理任务"}</Link>
   </article>;
 }
 

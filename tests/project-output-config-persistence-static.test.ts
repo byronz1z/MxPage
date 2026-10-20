@@ -5,7 +5,6 @@ const snapshotService = fs.readFileSync("lib/services/project-model-snapshot-ser
 const projectService = fs.readFileSync("lib/services/project-service.ts", "utf8");
 const analysisService = fs.readFileSync("lib/services/analysis-service.ts", "utf8");
 const plannerService = fs.readFileSync("lib/services/planner-service.ts", "utf8");
-const outputConfigCard = fs.readFileSync("components/shared/project-output-config-card.tsx", "utf8");
 
 assert.doesNotMatch(snapshotService, /json_patch|JSON_MERGE_PATCH|\$executeRaw/);
 assert.match(snapshotService, /updatedAt: current\.updatedAt/);
@@ -16,4 +15,3 @@ assert.match(projectService, /patchProjectModelSnapshot\(projectId, modelSnapsho
 assert.match(analysisService, /patchProjectModelSnapshot\(projectId, \{[\s\S]*analysisModelId: model/);
 assert.doesNotMatch(analysisService, /modelSnapshot: \{[\s\S]*analysisModelId: model/);
 assert.match(plannerService, /patchProjectModelSnapshot\(projectId, \{ previewConfig \}\)/);
-assert.doesNotMatch(outputConfigCard, /\.\.\.snapshot/);

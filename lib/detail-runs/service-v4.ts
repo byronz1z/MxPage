@@ -18,6 +18,7 @@ import { invokeStructured } from "./structured-model";
 import { normalizeTypesetting, type V4TextBlock } from "./typesetting-v4";
 import { buildCommerceSystemPrompt } from "@/lib/ai/prompts/ecommerce-system";
 import { materializeImagePrompts } from "./image-prompts-v4";
+import { promptReviewSubmission, PromptReviewConflict, type PromptReview } from "./prompt-review";
 import { customerFacingCopy, cleanCustomerDirection, confirmedAnswerCopyRules } from "./customer-copy";
 import { contentCoverageInstructions, contentCoverageSchema, contentPlacementSchema, prepareContentCoverage, prepareReadableCopy } from "./content-review-v4";
 import { workflowReferenceAssets } from "@/lib/utils/asset-purpose";
@@ -26,7 +27,7 @@ import { isStructuredSchemaRejection, requestErrorMessage } from "@/lib/utils/re
 import { incompleteSupplementalEstimates, missingFieldSchema, normalizeSupplementalQuestions, resolveSupplementalSubmission, supplementalInputInstructions, supplementalQuestionsFromFields, supplementalQuestionIssues, supplementalSuggestionsSchema, type StoredSupplementalQuestion } from "./supplemental-input";
 
 const json = (value: unknown) => JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
-const active = ["PENDING", "RUNNING", "WAITING_INPUT"];
+const active = ["PENDING", "RUNNING", "WAITING_INPUT", "WAITING_PROMPTS"];
 const SKIP_INPUT_PREFIX = "按现有信息继续；";
 const INPUT_STAGE_LABEL = "请确认商品补充信息";
 const SUGGESTION_TASK = "只生成三个逐题弹窗的问题及每题三个具体候选答案，不重做商品规划。questions[].fields 使用 requiredFields 中的原始字段 ID，合并分组时也必须包含所有原始 ID；补充的商品场景或人群问题可使用新字段 ID。";
@@ -58,6 +59,7 @@ const setReviewSchema = z.object({ passed: z.boolean(), issues: z.array(z.object
 
 type RequestProgress = { state: "running" | "completed" | "uncertain" | "rejected"; requestId: string; error?: string; upstreamTask?: UpstreamImageTask };
 export type V4Checkpoint = {
+  promptReview?: PromptReview;
   taskTiming?: TaskTiming;
   requestTimings?: Record<string, RequestTiming>;
   workflowVersion: 4; stage: string; plan?: WorkflowPlan; artDirection?: z.infer<typeof directionSchema>; images: Array<{ sectionId: string; title: string; state: "pending" | "generating" | "generated" | "checked" | "uncertain"; assetId?: string; correctionCount: number; check?: z.infer<typeof imageReviewSchema> }>; imageReviews: Record<string, z.infer<typeof imageReviewSchema>>; setReview?: z.infer<typeof setReviewSchema>; missingFields?: z.infer<typeof planSchema>["missingFields"]; questions?: StoredSupplementalQuestion[]; answers: string[]; attempts: Record<string, number>; timings: Record<string, { startedAt: string; finishedAt?: string }>; lastError?: { stage: string; code: string; message: string; retryable: boolean };
@@ -145,7 +147,7 @@ export async function createV4DetailRun(projectId: string, raw: unknown, credent
   const heroModelId = input.heroCount ? selectModel(provider.models, "hero") : undefined;
   const imageModelId = input.detailCount ? selectModel(provider.models, "detail") : heroModelId!;
   const providerSnapshot = snapshotProvider(provider);
-  const checkpoint: V4Checkpoint = { workflowVersion: 4, stage: "PREPARE", images: [], imageReviews: {}, answers: [], attempts: {}, timings: {} };
+  const checkpoint: V4Checkpoint = { workflowVersion: 4, stage: "PREPARE", images: [], imageReviews: {}, answers: [], attempts: {}, timings: {}, ...(input.mode !== "xhs" ? { promptReview: { revision: 0, pages: [] } } : {}) };
   let run;
   try {
     run = await prisma.$transaction(async tx => {
@@ -178,13 +180,52 @@ function launchV4(runId: string, credentials: RequestProviderCredentials) {
   }).finally(() => workers.delete(runId));
 }
 
-export async function controlV4DetailRun(projectId: string, runId: string, action: "answers" | "suggestions" | "resume" | "cancel", raw: unknown, credentials: RequestProviderCredentials) {
+export async function controlV4DetailRun(projectId: string, runId: string, action: "answers" | "suggestions" | "resume" | "cancel" | "save-prompts" | "confirm-prompts", raw: unknown, credentials: RequestProviderCredentials) {
   if (action !== "cancel") await projectForRun(projectId);
   await getV4DetailRun(projectId, runId);
   const run = await prisma.detailRun.findFirstOrThrow({ where: { id: runId, projectId } });
   const cp = run.checkpoint as unknown as V4Checkpoint;
   if (action !== "cancel" && (run.input as { mode?: string } | null)?.mode === "translate") throw new Error("旧翻译任务请在详情页翻译批次中继续，当前执行器不再处理翻译。");
   if (cp.workflowVersion !== 4) throw new Error("该历史任务不支持继续执行，请重新创建任务。");
+  if (action === "save-prompts" || action === "confirm-prompts") {
+    const body = promptReviewSubmission.parse(raw);
+    const review = cp.promptReview;
+    const samePages = review?.pages.length === body.pages.length && review.pages.every((page, index) => page.sectionId === body.pages[index].sectionId && page.prompt === body.pages[index].prompt);
+    if (review?.approvedAt) {
+      if (action === "confirm-prompts" && review.confirmationId === body.confirmationId && samePages) return getV4DetailRun(projectId, runId);
+      throw new PromptReviewConflict("本次提示词已经确认，不能覆盖已提交的生成任务。请刷新查看进度。");
+    }
+    if (run.status !== "WAITING_PROMPTS" || !review?.pages.length || workers.has(runId) || run.leaseToken) throw new PromptReviewConflict("当前任务尚未等待提示词确认，请刷新后再操作。");
+    if (review.pages.length !== body.pages.length || review.pages.some((page, index) => page.sectionId !== body.pages[index].sectionId)) throw new PromptReviewConflict("页面列表已变化，请刷新后重新检查全部提示词。");
+    if (review.revision !== body.revision) {
+      if (action === "save-prompts" && samePages) return getV4DetailRun(projectId, runId);
+      throw new PromptReviewConflict("提示词已在其他页面更新，请刷新后再确认，避免覆盖新的修改。");
+    }
+    if (Object.keys(cp.requests || {}).some(key => key.startsWith("GENERATE:"))) throw new PromptReviewConflict("当前任务已有图片请求，不能再修改待生成提示词。");
+    const confirm = action === "confirm-prompts";
+    if (confirm && !body.confirmationId) throw new PromptReviewConflict("缺少确认编号，请刷新后重新确认。");
+    // Validate the task's original provider before accepting approval; saving drafts needs no credentials.
+    if (confirm) {
+      const snapshot = (run.input as { providerSnapshot?: ProviderSnapshot }).providerSnapshot;
+      await getProviderAdapter(snapshot?.id, snapshot, { legacyTextProtocol: !snapshot });
+    }
+    cp.promptReview = { revision: review.revision + 1, pages: review.pages.map((page, index) => ({ ...page, prompt: body.pages[index].prompt })), ...(confirm ? { approvedAt: new Date().toISOString(), confirmationId: body.confirmationId } : {}) };
+    const accepted = await prisma.$transaction(async tx => {
+      const changed = await tx.detailRun.updateMany({ where: { id: runId, status: "WAITING_PROMPTS", updatedAt: run.updatedAt, leaseToken: null, checkpoint: { path: "$.promptReview.revision", equals: body.revision } }, data: {
+        checkpoint: json(cp), ...(confirm ? { status: "PENDING", stage: "提示词已确认，准备生成", error: null, leaseUntil: new Date(Date.now() + RUN_LEASE_MS) } : {}),
+      } });
+      if (!changed.count) {
+        const latest = await tx.detailRun.findUniqueOrThrow({ where: { id: runId } });
+        const approved = (latest.checkpoint as unknown as V4Checkpoint).promptReview;
+        if (confirm && approved && approved.confirmationId === body.confirmationId && approved.pages.every((page, index) => page.sectionId === body.pages[index]?.sectionId && page.prompt === body.pages[index]?.prompt)) return false;
+        throw new PromptReviewConflict("任务状态已变化，请刷新查看最新提示词和进度。");
+      }
+      for (const page of cp.promptReview!.pages) await tx.pageSection.update({ where: { id: page.sectionId, projectId }, data: { visualPrompt: page.prompt } });
+      return true;
+    });
+    if (confirm && accepted) launchV4(runId, credentials);
+    return getV4DetailRun(projectId, runId);
+  }
   if (action === "cancel") { await prisma.detailRun.updateMany({ where: { id: runId, status: { in: active } }, data: { status: "CANCELED", stage: "已停止" } }); return getV4DetailRun(projectId, runId); }
   if (run.status === "RUNNING" || run.status === "PENDING") return getV4DetailRun(projectId, runId);
   if (workers.has(runId) || (run.leaseToken && run.leaseUntil && run.leaseUntil.getTime() > Date.now())) {
@@ -195,6 +236,7 @@ export async function controlV4DetailRun(projectId: string, runId: string, actio
     throw new Error("已发出的请求正在收尾并保存结果，请稍后继续。");
   }
   if (run.status === "COMPLETED") return getV4DetailRun(projectId, runId);
+  if (run.status === "WAITING_PROMPTS") throw new PromptReviewConflict("请先预览并确认每页提示词，再开始生成图片。");
   if (action === "resume" && run.status === "WAITING_INPUT") throw new Error("请先提交补充信息或选择按现有信息继续。");
   if (await prisma.detailRun.findFirst({ where: { projectId, id: { not: runId }, OR: [{ status: { in: active } }, { leaseToken: { not: null }, leaseUntil: { gt: new Date() } }] } })) throw new Error("该项目还有其他任务在运行。");
   const legacyRequests = !cp.requests;
@@ -244,6 +286,7 @@ export async function controlV4DetailRun(projectId: string, runId: string, actio
     cp.plan = undefined; cp.artDirection = undefined; cp.images = []; cp.imageReviews = {}; cp.requests = {}; cp.retryAuthorized = []; cp.setReview = undefined; cp.setReviewGroups = {}; cp.setReviewAssetIds = undefined;
     cp.contentRepairRequested = undefined; cp.contentPlacements = undefined;
     cp.contentWarnings = undefined;
+    if (cp.promptReview) cp.promptReview = { revision: cp.promptReview.revision + 1, pages: [] };
   }
   const changed = await prisma.detailRun.updateMany({ where: { id: runId, status: run.status, updatedAt: run.updatedAt }, data: { status: "PENDING", stage: "准备继续", error: null, checkpoint: json(cp), leaseToken: null, leaseUntil: new Date(Date.now() + RUN_LEASE_MS) } });
   if (changed.count) launchV4(runId, credentials);
@@ -428,6 +471,12 @@ async function executeV4(runId: string) {
     cp.contentWarnings = [...new Set([...(cp.contentWarnings || []), ...readableCopy.warnings])];
     if (cp.lastError?.stage === "ART_DIRECTION") cp.lastError = undefined;
     const sections = materializeImagePrompts(savedSections, normalizedArt.sections, confirmedEstimates).map(section => ({ ...section, visualPrompt: referenceRoles ? `${referenceRoles}\n${section.visualPrompt}` : section.visualPrompt }));
+    if (cp.promptReview) {
+      if (!cp.promptReview.pages.length) cp.promptReview = { revision: cp.promptReview.revision + 1, pages: sections.map(section => ({ sectionId: section.id, title: section.title, kind: section.type === "HERO" ? "HERO" : "DETAIL", prompt: section.visualPrompt })) };
+      if (sections.length !== cp.promptReview.pages.length || sections.some((section, index) => section.id !== cp.promptReview!.pages[index].sectionId)) throw new PromptReviewConflict("页面列表与已保存提示词不一致，未发起图片请求。");
+      // Use the exact saved/approved string on every resume, never compile over user edits.
+      sections.forEach((section, index) => { section.visualPrompt = cp.promptReview!.pages[index].prompt; });
+    }
     await lease.transaction(async tx => { for (const section of sections) { await tx.pageSection.update({ where: { id: section.id }, data: { visualPrompt: section.visualPrompt, editableData: json({ ...(section.editableData as object || {}), workflowVersion: 4, artDirection: section.artDirection }) } }); } });
     const recoveredAssets = await prisma.productAsset.findMany({ where: { projectId, type: "GENERATED", sectionId: { in: sections.map(section => section.id) } }, orderBy: { createdAt: "desc" } });
     cp.images = sections.map(section => {
@@ -451,6 +500,12 @@ async function executeV4(runId: string) {
     });
     await lease.transaction(async tx => { for (const image of cp.images.filter(image => image.assetId)) await tx.pageSection.update({ where: { id: image.sectionId }, data: { currentImageAssetId: image.assetId, status: "SUCCESS" } }); });
     await end("ART_DIRECTION");
+    if (cp.promptReview && !cp.promptReview.approvedAt && cp.images.some(image => !image.assetId)) {
+      cp.stage = "WAITING_PROMPTS";
+      cp.taskTiming = touchTiming(cp.taskTiming!, true);
+      await lease.transaction(async tx => { await tx.detailRun.update({ where: { id: runId }, data: { status: "WAITING_PROMPTS", stage: "请预览并确认每页提示词", error: null, checkpoint: json(cp) } }); });
+      return;
+    }
     await begin("GENERATE");
     if (cp.lastError?.stage === "GENERATE") cp.lastError = undefined;
     const settings = (input.imageSettings || {}) as { size?: string; background?: "auto" | "opaque" | "transparent"; outputFormat?: "png" | "jpeg" | "webp"; outputCompression?: number; moderation?: "auto" | "low" };
@@ -495,7 +550,7 @@ async function executeV4(runId: string) {
     for (const progress of cp.images.filter(i => i.assetId && i.state === "generated")) {
       try {
         const reviewImage = await imageData(progress.assetId!, projectId);
-        await requestOnce(`IMAGE_REVIEW:${progress.sectionId}`, requestId => invokeStructured({ ...textSettings(input.providerSnapshot || {}), apiKey, baseUrl: provider.baseUrl, model: input.analysisModelId || input.planningModelId, schema: imageReviewSchema, system: `你是图片质检模型。只返回 JSON。检查商品一致性、事实准确性、排版可读性、构图和连续性，只报告实际问题。标题同义改写、标点和换行差异不算缺陷；不要逐字对照规划文案，关注事实、参数、完整信息和可读性。${confirmedAnswerCopyRules}缺少内部来源说明不算图片缺陷。`, input: JSON.stringify({ section: sections.find(s => s.id === progress.sectionId)?.title, plan: cp.plan, art: cp.artDirection?.sections.find(s => s.sectionIndex === sections.find(s => s.id === progress.sectionId)?.order) }), images: [reviewImage], timeoutMs: 45000, maxAttempts: 1, requestId, monitor: { projectId, sectionId: progress.sectionId, runId, operation: "v4_image_review" } }), review => {
+        await requestOnce(`IMAGE_REVIEW:${progress.sectionId}`, requestId => invokeStructured({ ...textSettings(input.providerSnapshot || {}), apiKey, baseUrl: provider.baseUrl, model: input.analysisModelId || input.planningModelId, schema: imageReviewSchema, system: `你是图片质检模型。只返回 JSON。如有 approvedPrompt，以其中用户确认的构图和画面文字为准，不要求恢复原分镜的措辞；商品事实仍须核对。检查商品一致性、事实准确性、排版可读性、构图和连续性，只报告实际问题。标题同义改写、标点和换行差异不算缺陷；不要逐字对照规划文案，关注事实、参数、完整信息和可读性。${confirmedAnswerCopyRules}缺少内部来源说明不算图片缺陷。`, input: JSON.stringify({ approvedPrompt: cp.promptReview?.approvedAt ? sections.find(s => s.id === progress.sectionId)?.visualPrompt : undefined, section: sections.find(s => s.id === progress.sectionId)?.title, plan: cp.plan, art: cp.artDirection?.sections.find(s => s.sectionIndex === sections.find(s => s.id === progress.sectionId)?.order) }), images: [reviewImage], timeoutMs: 45000, maxAttempts: 1, requestId, monitor: { projectId, sectionId: progress.sectionId, runId, operation: "v4_image_review" } }), review => {
           const result = { ...review, passed: review.passed && !review.issues.some(issue => issue.severity === "error") };
           progress.check = result; progress.state = "checked"; cp.imageReviews[progress.sectionId] = result;
         });
@@ -523,7 +578,7 @@ async function executeV4(runId: string) {
           try {
             const groupImages = await Promise.all(reviewImages.map(image => imageData(image.assetId!, projectId)));
             // Full-plan visual checks need the same bounded wait as planning; timeout still requires explicit retry.
-            await requestOnce(key, requestId => invokeStructured({ ...textSettings(input.providerSnapshot || {}), apiKey, baseUrl: provider.baseUrl, model: input.analysisModelId || input.planningModelId, schema: setReviewSchema, system: `你是整套页面检查模型。只返回 JSON。标题同义改写、标点和换行差异不算缺陷；只检查意思丢失、错误参数或不可读文字。依据plan.contentCoverage和逐屏copy检查实际图片的信息覆盖、商品一致性、重复构图、文字与连续性。imageOrder 给出本组图片的全套 sectionIndex，issues.sectionIndexes 必须引用这些全套下标。超过12张时分组检查，本组看不到的图片不要猜测。视觉统一不能以删除内容换取；只有内容错误、遮挡或不可读才指出具体问题。不删除图片，不要求全套改成纯色背景。${confirmedAnswerCopyRules}缺少内部来源说明不算图片缺陷。`, input: JSON.stringify({ plan: cp.plan, artDirection: cp.artDirection, imageOrder: reviewImages.map((image, index) => ({ sectionIndex: start + index, title: image.title })) }), images: groupImages, timeoutMs: 180000, maxAttempts: 1, requestId, monitor: { projectId, runId, operation: "v4_set_review" } }), result => { cp.setReviewGroups![key] = { assetIds: groupAssets, result }; });
+            await requestOnce(key, requestId => invokeStructured({ ...textSettings(input.providerSnapshot || {}), apiKey, baseUrl: provider.baseUrl, model: input.analysisModelId || input.planningModelId, schema: setReviewSchema, system: `你是整套页面检查模型。只返回 JSON。如有 approvedPrompts，以其中用户确认的构图和画面文字为准，不要求恢复原分镜的措辞；商品事实仍须核对。标题同义改写、标点和换行差异不算缺陷；只检查意思丢失、错误参数或不可读文字。依据plan.contentCoverage和逐屏copy检查实际图片的信息覆盖、商品一致性、重复构图、文字与连续性。imageOrder 给出本组图片的全套 sectionIndex，issues.sectionIndexes 必须引用这些全套下标。超过12张时分组检查，本组看不到的图片不要猜测。视觉统一不能以删除内容换取；只有内容错误、遮挡或不可读才指出具体问题。不删除图片，不要求全套改成纯色背景。${confirmedAnswerCopyRules}缺少内部来源说明不算图片缺陷。`, input: JSON.stringify({ approvedPrompts: cp.promptReview?.approvedAt ? cp.promptReview.pages : undefined, plan: cp.plan, artDirection: cp.artDirection, imageOrder: reviewImages.map((image, index) => ({ sectionIndex: start + index, title: image.title })) }), images: groupImages, timeoutMs: 180000, maxAttempts: 1, requestId, monitor: { projectId, runId, operation: "v4_set_review" } }), result => { cp.setReviewGroups![key] = { assetIds: groupAssets, result }; });
           } catch (error) {
             if (error instanceof RunHalted) throw error;
             cp.lastError = { stage: "SET_REVIEW", code: isTimeout(error) ? "TIMEOUT" : "REVIEW_FAILED", message: requestErrorMessage(error, "整套检查未完成，图片已保留，请人工核对。"), retryable: false }; await persist();

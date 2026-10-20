@@ -21,6 +21,7 @@ export async function assertNoDetailRun(projectId: string, allowWaiting = false)
   const translation = await prisma.generationTask.findFirst({ where: { projectId, id: { startsWith: "translate:" }, taskType: "TRANSLATE_PAGE", status: "RUNNING", updatedAt: { gt: new Date(Date.now() - 60000) } } });
   if (translation) throw new Error("图片翻译仍在运行，请停止并等待当前请求结束后再修改。");
   const active = await prisma.detailRun.findFirst({ where: { projectId, OR: [
+    { status: "WAITING_PROMPTS" },
     ...(allowWaiting ? [] : [{ status: "WAITING_INPUT" }]),
     { status: { in: ["PENDING", "RUNNING"] }, leaseUntil: { gt: new Date() } },
     { leaseToken: { not: null }, leaseUntil: { gt: new Date() } },

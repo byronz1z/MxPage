@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db/prisma";
 import type { RequestProviderCredentials } from "@/lib/services/provider-runtime";
 import { createV4DetailRun, controlV4DetailRun, getV4DetailRun } from "./service-v4";
 
-const ACTIVE = ["PENDING", "RUNNING", "WAITING_INPUT"];
+const ACTIVE = ["PENDING", "RUNNING", "WAITING_INPUT", "WAITING_PROMPTS"];
 
 export async function recoverInterruptedRuns(projectId: string) {
   await prisma.detailRun.updateMany({ where: { projectId, status: { in: ["PENDING", "RUNNING"] }, OR: [{ leaseUntil: { lt: new Date() } }, { leaseUntil: null }] }, data: { status: "INTERRUPTED", stage: "运行已中断，可继续", leaseToken: null, leaseUntil: null } });
@@ -21,7 +21,7 @@ export async function createDetailRun(projectId: string, raw: unknown, credentia
   return createV4DetailRun(projectId, raw, credentials);
 }
 
-export async function controlDetailRun(projectId: string, runId: string, action: "answers" | "suggestions" | "resume" | "cancel", raw: unknown, credentials: RequestProviderCredentials) {
+export async function controlDetailRun(projectId: string, runId: string, action: "answers" | "suggestions" | "resume" | "cancel" | "save-prompts" | "confirm-prompts", raw: unknown, credentials: RequestProviderCredentials) {
   const run = await prisma.detailRun.findUnique({ where: { id: runId }, select: { checkpoint: true } });
   if ((run?.checkpoint as { workflowVersion?: number } | null)?.workflowVersion !== 4) throw new Error("该历史任务不支持继续执行，请重新创建任务。");
   return controlV4DetailRun(projectId, runId, action, raw, credentials);

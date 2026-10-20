@@ -28,12 +28,23 @@ async function until(check: () => boolean | Promise<boolean>) {
   for (let i = 0; i < 800; i++) { if (await check()) return; await pause(); }
   throw new Error("V4 test did not settle");
 }
-async function settled(id: string) {
+async function settled(id: string, approvePrompts = true): Promise<Awaited<ReturnType<typeof db.detailRun.findUniqueOrThrow>>> {
   await until(async () => {
     const run = await db.detailRun.findUniqueOrThrow({ where: { id } });
     return !["RUNNING", "PENDING"].includes(run.status) && !(globalThis as any).detailV4Workers?.has(id);
   });
-  return db.detailRun.findUniqueOrThrow({ where: { id } });
+  const run = await db.detailRun.findUniqueOrThrow({ where: { id } });
+  if (approvePrompts && run.status === "WAITING_PROMPTS") {
+    await approve(run);
+    return settled(id, false);
+  }
+  return run;
+}
+async function approve(run: { id: string; projectId: string; checkpoint: unknown }, edits?: string[]) {
+  const review = cpOf(run).promptReview!;
+  const body = { revision: review.revision, confirmationId: randomUUID(), pages: review.pages.map((page, index) => ({ sectionId: page.sectionId, prompt: edits?.[index] ?? page.prompt })) };
+  await runtime.runWithProviderCredentials(credentials, () => service.controlV4DetailRun(run.projectId, run.id, "confirm-prompts", body, credentials));
+  return body;
 }
 function deferred() {
   let resolve!: () => void;
@@ -176,6 +187,102 @@ after(async () => {
   globalThis.fetch = originalFetch;
   await db?.$disconnect();
   if (directory && path.dirname(directory) === path.resolve(tmpdir()) && path.basename(directory).startsWith("mxpage-v4-recovery-test-")) await rm(directory, { recursive: true, force: true });
+});
+
+test("new detail tasks save every final prompt and cannot generate before explicit approval", async () => {
+  const fixture = await start();
+  const waiting = await settled(fixture.runId, false);
+  assert.equal(waiting.status, "WAITING_PROMPTS");
+  assert.deepEqual([count("PLAN"), count("ART_DIRECTION"), count("GENERATE")], [1, 1, 0]);
+  const review = cpOf(waiting).promptReview!;
+  assert.equal(review.pages.length, 7);
+  assert.ok(review.pages.every(page => page.prompt.includes("Exact copy:")));
+  assert.equal(cpOf(waiting).taskTiming?.finishedAt !== undefined, true);
+  const read = await service.getV4DetailRun(fixture.projectId, fixture.runId);
+  assert.deepEqual(cpOf(read!).promptReview, review);
+  await assert.rejects(service.controlV4DetailRun(fixture.projectId, fixture.runId, "resume", {}, credentials), /预览并确认/);
+  await assert.rejects(service.controlV4DetailRun(fixture.projectId, fixture.runId, "answers", { skip: true }, credentials), /预览并确认/);
+  const { assertNoDetailRun } = await import("../lib/detail-runs/lock");
+  await assert.rejects(assertNoDetailRun(fixture.projectId, true), /仍在运行/);
+  const duplicate = await service.createV4DetailRun(fixture.projectId, fixture.input, credentials);
+  assert.equal(duplicate!.id, fixture.runId);
+  assert.equal(count("GENERATE"), 0);
+
+  const pages = review.pages.map((page, index) => ({ sectionId: page.sectionId, prompt: index ? page.prompt : "暖白背景，保留杯形。\nExact copy:\n用户确认的中文标题\n" }));
+  const save = { revision: review.revision, pages };
+  const saved = await service.controlV4DetailRun(fixture.projectId, fixture.runId, "save-prompts", save, {});
+  assert.equal(saved!.status, "WAITING_PROMPTS");
+  assert.equal(cpOf(saved!).promptReview!.revision, review.revision + 1);
+  assert.equal(cpOf(saved!).promptReview!.pages[0].prompt, pages[0].prompt);
+  assert.equal((await db.pageSection.findUniqueOrThrow({ where: { id: pages[0].sectionId } })).visualPrompt, pages[0].prompt);
+  await service.controlV4DetailRun(fixture.projectId, fixture.runId, "save-prompts", save, {}); // A lost save response is safe to replay.
+  await assert.rejects(service.controlV4DetailRun(fixture.projectId, fixture.runId, "confirm-prompts", { ...save, confirmationId: randomUUID() }, credentials), /其他页面更新/);
+  for (const invalid of [[], pages.slice(1), [...pages].reverse(), pages.map((page, index) => index ? page : { ...page, sectionId: "foreign-page" }), pages.map((page, index) => index ? page : { ...page, prompt: "  " })]) {
+    await assert.rejects(service.controlV4DetailRun(fixture.projectId, fixture.runId, "save-prompts", { revision: review.revision + 1, pages: invalid }, {}));
+  }
+  assert.equal(count("GENERATE"), 0);
+  const body = { revision: review.revision + 1, pages, confirmationId: randomUUID() };
+  const batch = await db.generationTask.create({ data: { projectId: fixture.projectId, taskType: "BATCH_CREATE", status: "FAILED", errorMessage: "old batch completion", inputPayload: { workflow: "detail-batch-v1" }, outputPayload: { items: [{ projectId: fixture.projectId, runId: fixture.runId, status: "WAITING_PROMPTS", message: "ready" }] } } });
+  const { getBatch } = await import("../lib/detail-runs/batch");
+  assert.equal((await getBatch(batch.id)).status, "WAITING_PROMPTS");
+  assert.equal((await getBatch(batch.id)).error, null);
+  await Promise.all([0, 1].map(() => runtime.runWithProviderCredentials(credentials, () => service.controlV4DetailRun(fixture.projectId, fixture.runId, "confirm-prompts", body, credentials))));
+  const completed = await settled(fixture.runId, false);
+  assert.equal(completed.status, "COMPLETED");
+  assert.equal((await getBatch(batch.id)).status, "SUCCESS");
+  assert.deepEqual([count("PLAN"), count("ART_DIRECTION"), count("GENERATE")], [1, 1, 7]);
+  // Parallel siblings may reach the upstream in either order; every exact prompt must appear once.
+  assert.deepEqual(calls.filter(call => call.kind === "GENERATE").map(call => call.body.get("prompt")).sort(), pages.map(page => page.prompt).sort());
+  for (const page of pages) {
+    const asset = await db.productAsset.findFirstOrThrow({ where: { sectionId: page.sectionId, type: "GENERATED" } });
+    assert.equal((asset.metadata as { prompt?: string }).prompt, page.prompt);
+  }
+  assert.equal(calls.find(call => call.kind === "IMAGE_REVIEW")?.input.approvedPrompt, pages[0].prompt);
+  assert.equal(calls.find(call => call.kind === "SET_REVIEW")?.input.approvedPrompts[0].prompt, pages[0].prompt);
+  const before = calls.length;
+  await service.controlV4DetailRun(fixture.projectId, fixture.runId, "confirm-prompts", body, credentials);
+  assert.equal(calls.length, before);
+  await assert.rejects(service.controlV4DetailRun(fixture.projectId, fixture.runId, "save-prompts", save, credentials), /已经确认/);
+});
+
+test("stopping a prompt review preserves its draft; approved prompts survive uncertain image recovery", async () => {
+  const fixture = await start();
+  let run = await settled(fixture.runId, false);
+  const review = cpOf(run).promptReview!;
+  const pages = review.pages.map(page => ({ sectionId: page.sectionId, prompt: `${page.prompt}\n用户修改：柔和自然光` }));
+  await service.controlV4DetailRun(fixture.projectId, fixture.runId, "save-prompts", { revision: review.revision, pages }, {});
+  await service.controlV4DetailRun(fixture.projectId, fixture.runId, "cancel", {}, {});
+  await service.controlV4DetailRun(fixture.projectId, fixture.runId, "resume", {}, credentials);
+  run = await settled(fixture.runId, false);
+  assert.equal(run.status, "WAITING_PROMPTS");
+  assert.equal(cpOf(run).promptReview!.pages[0].prompt, pages[0].prompt);
+  assert.deepEqual([count("PLAN"), count("ART_DIRECTION"), count("GENERATE")], [1, 1, 0]);
+  respond = async call => call.kind === "GENERATE" && call.index === 0 ? new Response("timeout", { status: 504 }) : success(call);
+  await approve(run);
+  run = await settled(fixture.runId, false);
+  assert.equal(run.status, "PARTIAL");
+  assert.equal(count("GENERATE"), 7);
+  await db.pageSection.update({ where: { id: pages[0].sectionId }, data: { visualPrompt: "stale external value" } });
+  respond = success;
+  await resume(fixture.projectId, fixture.runId);
+  assert.equal(count("GENERATE"), 7);
+  await resume(fixture.projectId, fixture.runId, true);
+  assert.equal(count("GENERATE"), 8);
+  assert.equal(calls.filter(call => call.kind === "GENERATE").at(-1)?.body.get("prompt"), pages[0].prompt);
+});
+
+test("prompt approval preserves an existing selected image while generating missing pages", async () => {
+  const fixture = await seed({ generated: [0] });
+  const original = fixture.checkpoint.images[0].assetId;
+  const created = await runtime.runWithProviderCredentials(credentials, () => service.createV4DetailRun(fixture.projectId, { idempotencyKey: randomUUID(), heroCount: 3, detailCount: 4, quality: "low" }, credentials));
+  const waiting = await settled(created!.id, false);
+  assert.equal(waiting.status, "WAITING_PROMPTS");
+  assert.equal(count("GENERATE"), 0);
+  await approve(waiting);
+  const completed = await settled(created!.id, false);
+  assert.equal(completed.status, "COMPLETED");
+  assert.equal(cpOf(completed).images[0].assetId, original);
+  assert.equal(count("GENERATE"), 6);
 });
 
 for (const [heroCount, detailCount] of [[3, 0], [0, 1], [0, 4], [1, 0]]) test(`single-type creation ${heroCount}+${detailCount} preserves zero counts on replay`, async () => {

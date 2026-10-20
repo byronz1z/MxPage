@@ -94,7 +94,7 @@ export type RunCheckpoint = {
   questionAssetCount?: number;
   setReview?: { passed: boolean; issues: { sectionIds: string[]; message: string }[]; assetIds: string[] };
 };
-export const RUN_ACTIVE = ["PENDING", "RUNNING", "WAITING_INPUT"];
+export const RUN_ACTIVE = ["PENDING", "RUNNING", "WAITING_INPUT", "WAITING_PROMPTS"];
 export function outcome(images: ImageProgress[]) {
   return images.length > 0 && images.every(i => i.state === "checked" && i.check?.passed)
     ? "COMPLETED" : "PARTIAL";

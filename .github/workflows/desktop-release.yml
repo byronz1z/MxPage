@@ -33,6 +33,7 @@ jobs:
       - run: npm run typecheck
       - run: npx playwright-core install --with-deps chromium
       - run: npm run test:browser
+      - run: node tests/browser/regression.cjs --prompt-review-flow
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -116,6 +117,6 @@ jobs:
         run: |
           tag="v$(node -p "require('./package.json').version")"
           gh release create "$tag" release/*.zip release/SHA256SUMS.txt \
-            --target "$GITHUB_SHA" --draft --title "MxPage $tag · 确定性工作流与跨平台绿色版" \
+            --target "$GITHUB_SHA" --draft --title "MxPage $tag · 跨平台桌面版" \
             --notes-file "docs/releases/$tag.md"
           gh release edit "$tag" --draft=false --latest

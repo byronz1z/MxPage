@@ -14,6 +14,8 @@ const checkUploadDrafts = require('./upload-drafts.cjs');
 const checkSupplementalInput = require('./supplemental-input.cjs');
 const checkAsyncImage = require('./async-image.cjs');
 const checkOutputCounts = require('./output-counts.cjs');
+const checkPromptReview = require('./prompt-review.cjs');
+const promptFlow = process.argv.includes('--prompt-review-flow') ? require('./prompt-review-flow.cjs') : null;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, label) { for (let i = 0; i < 300; i++) { if (await check()) return; await sleep(200); } throw new Error(`Timeout: ${label}`); }
 
@@ -37,6 +39,7 @@ async function until(check, label) { for (let i = 0; i < 300; i++) { if (await c
   const png = await sharp({ create: { width: 80, height: 120, channels: 3, background: '#c4ad89' } }).png().toBuffer();
   const pending = [], calls = [], forbidden = [];
   const provider = http.createServer(async (req, res) => {
+    if (promptFlow) return promptFlow.respond(req, res, { pending, calls, forbidden });
     if (req.url !== '/v1/images/edits' || req.method !== 'POST') { forbidden.push(req.url); res.writeHead(500).end(); return; }
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     calls.push(Buffer.concat(chunks));
@@ -44,7 +47,7 @@ async function until(check, label) { for (let i = 0; i < 300; i++) { if (await c
   });
   await new Promise(resolve => provider.listen(0, '127.0.0.1', resolve));
   const providerUrl = `http://127.0.0.1:${provider.address().port}/v1`;
-  await db.providerConfig.create({ data: { name: 'Isolated mock', baseUrl: providerUrl, apiKeyEncrypted: 'unused', isActive: true, models: { create: { modelId: 'gpt-image-2.5-flare', label: 'Mock', capabilities: { image_edit: true, real_image_edit: true }, roles: {}, isDefaultImageEdit: true } } } });
+  await db.providerConfig.create({ data: { name: 'Isolated mock', baseUrl: providerUrl, apiKeyEncrypted: 'unused', isActive: true, models: { create: promptFlow ? promptFlow.models : { modelId: 'gpt-image-2.5-flare', label: 'Mock', capabilities: { image_edit: true, real_image_edit: true }, roles: {}, isDefaultImageEdit: true } } } });
   const log = fs.openSync('test-output/browser-regression/server.log', 'w');
   // Unique dist/config/database and an ephemeral port; never reuse the user's running service.
   const server = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'dev', '--hostname', '127.0.0.1', '--port', String(port)], { windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', log, log], env: { ...process.env, DATABASE_URL: databaseUrl, STORAGE_ROOT: path.join(directory, 'storage'), NEXT_DIST_DIR: dist, MXPAGE_TEST_TSCONFIG: tsconfigFile, LOCK_BASE_URL: providerUrl, FORCED_API_BASE: providerUrl, FORCED_API_BASE_URL: providerUrl, NEXT_TELEMETRY_DISABLED: '1' } });
@@ -53,6 +56,13 @@ async function until(check, label) { for (let i = 0; i < 300; i++) { if (await c
   try {
     await until(async () => { try { return (await fetch(`${baseUrl}/translate`)).ok; } catch { return false; } }, 'isolated server');
     browser = await chromium.launch({ ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : fs.existsSync(chromium.executablePath()) ? {} : { channel: 'chrome' }), headless: true, args: ['--no-proxy-server'] });
+    if (promptFlow) {
+      await promptFlow.check(browser, baseUrl, db, { providerUrl, pending, calls, png });
+      assert.deepEqual(forbidden, []);
+      return;
+    }
+    await checkPromptReview(browser, baseUrl, db);
+    if (process.argv.includes('--prompt-review-only')) { assert.deepEqual(forbidden, []); assert.equal(calls.length, 0); return; }
     await checkOutputCounts(browser, baseUrl, db);
     if (process.argv.includes('--output-counts-only')) { assert.deepEqual(forbidden, []); assert.equal(calls.length, 0); return; }
     await checkSupplementalInput(browser, baseUrl, db);

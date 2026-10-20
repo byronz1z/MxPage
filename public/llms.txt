@@ -1,6 +1,6 @@
 # MxPage
 
-> Open-source, locally deployable AI e-commerce image workspace by Lingju Huijing (灵矩绘境 / MatrixInspire). MIT source license. Current documentation: v0.3.0, 2026-10-20.
+> Open-source, locally deployable AI e-commerce image workspace by Lingju Huijing (灵矩绘境 / MatrixInspire). MIT source license. Current documentation: v0.3.1, 2026-10-20.
 
 ## Quick answers
 
@@ -13,6 +13,8 @@
 - Evidence: docs/examples/README.md contains curated real outputs and their limitations. docs/provider-live-acceptance.md names real-tested models/operations separately from mock protocol coverage. Desktop GUI control is not marked accepted.
 
 ## Product facts
+
+- New detail tasks pause after storyboarding with all image prompts expanded on one page for editing and shared approval. Saving drafts makes no model request; approving all pages starts generation using the exact approved prompts. Refresh/resume retain saved edits; stale revisions are rejected and repeated confirmation is idempotent. Single and batch detail entry points require this approval; older tasks and XHS keep their prior flow.
 
 - Counts accept 0–10 HERO and 0–20 DETAIL across configuration, batch and Agent entry points, with a combined minimum of one. Either type may be zero; saving, reopening, regeneration and export preserve it. Merged snapshot patches also reject 0+0. Mock workflow coverage verifies 3+0, 0+1, 0+4 and 1+0 without extra images or requests on replay.
 - Model discovery distinguishes missing local credentials from upstream HTTP 401/403 without retrying. Failed refreshes/saves preserve browser credentials; switching service addresses clears the old key. Explicit form credentials take priority and wrong-service header credentials are not reused for discovery.
@@ -71,7 +73,7 @@
 - [Chinese README](https://github.com/ziguishian/MxPage/blob/main/README.md)
 - [English README](https://github.com/ziguishian/MxPage/blob/main/README.en.md)
 - [AGENTS.md contributor instructions](https://github.com/ziguishian/MxPage/blob/main/AGENTS.md)
-- [v0.3.0 release](https://github.com/ziguishian/MxPage/blob/main/docs/releases/v0.3.0.md)
+- [v0.3.1 release](https://github.com/ziguishian/MxPage/blob/main/docs/releases/v0.3.1.md)
 - [Latest downloads](https://github.com/ziguishian/MxPage/releases/latest)
 - [V4 recovery](https://github.com/ziguishian/MxPage/blob/main/docs/workflow-v4-reliability.md)
 - [Translation](https://github.com/ziguishian/MxPage/blob/main/docs/translation-workflow.md)

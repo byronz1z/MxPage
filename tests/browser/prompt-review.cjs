@@ -1,0 +1,95 @@
+const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
+
+module.exports = async function checkPromptReview(browser, baseUrl, db) {
+  const project = await db.project.create({ data: { name: '陶瓷杯 · 提示词确认', platform: 'general_ecommerce', style: 'generic_clean' } });
+  const sections = [];
+  for (const [index, title] of ['主图 · 真实外观', '详情 · 杯口与杯柄'].entries()) sections.push(await db.pageSection.create({ data: { projectId: project.id, sectionKey: `v4-${index}`, order: index, type: index ? 'CUSTOM' : 'HERO', title, goal: '展示商品细节', copy: title, visualPrompt: 'original' } }));
+  const review = { revision: 1, pages: sections.map((section, index) => ({ sectionId: section.id, title: section.title, kind: index ? 'DETAIL' : 'HERO', prompt: `使用参考图中的陶瓷杯，保持杯口、杯柄及釉面形态。${index ? '侧面近景展示杯柄与杯身的连接，柔和侧光，背景保持简洁。' : '正面三分之四视角，暖白背景，桌面自然投影，主体清晰完整。'}\n\nExact copy:\n${index ? '看清杯口与杯柄细节' : '给日常留一杯温度'}` })) };
+  const checkpoint = { workflowVersion: 4, stage: 'WAITING_PROMPTS', promptReview: review, images: sections.map(section => ({ sectionId: section.id, title: section.title, state: 'pending', correctionCount: 0 })), answers: [], imageReviews: {}, timings: {}, attempts: {}, requests: {} };
+  const run = await db.detailRun.create({ data: { projectId: project.id, idempotencyKey: randomUUID(), status: 'WAITING_PROMPTS', stage: '请预览并确认每页提示词', input: { heroCount: 1, detailCount: 1 }, checkpoint } });
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    page.setDefaultTimeout(60000);
+    const errors = [], posts = [], confirmations = [];
+    page.on('pageerror', error => errors.push(error.message));
+    page.on('request', request => { if (request.method() === 'POST') posts.push(new URL(request.url()).pathname); });
+    const base = `${baseUrl}/api/projects/${project.id}/detail-runs/${run.id}`;
+    await page.goto(`${baseUrl}/projects/${project.id}/editor`);
+    const panel = page.getByRole('region', { name: '生成前提示词确认' });
+    await panel.waitFor();
+    assert.equal(await page.getByRole('button', { name: '生成这张图片', exact: true }).isDisabled(), true);
+    assert.deepEqual(posts, []);
+    const input = page.getByRole('textbox', { name: '第 1 页完整提示词', exact: true });
+    const detailInput = page.getByRole('textbox', { name: '第 2 页完整提示词', exact: true });
+    assert.equal(await panel.getByRole('textbox').count(), 2);
+    assert.equal(await input.isVisible(), true);
+    assert.equal(await detailInput.isVisible(), true);
+    assert.equal(await panel.getByRole('button', { name: /第 \d 页/ }).count(), 0);
+    const edited = review.pages[0].prompt.replace('暖白背景', '暖白背景与浅灰桌面');
+    const detailEdited = review.pages[1].prompt.replace('柔和侧光', '柔和侧光与浅灰桌面');
+    await input.fill(edited);
+    await detailInput.fill(detailEdited);
+    assert.equal(await input.inputValue(), edited);
+    let failSave = true;
+    await page.route(`${base}/save-prompts`, async route => {
+      if (!failSave) return route.continue();
+      failSave = false;
+      await route.fulfill({ status: 409, json: { success: false, error: { code: 'TEST_FAILURE', message: '模拟保存失败，修改仍保留' } } });
+    });
+    await page.getByRole('button', { name: '保存修改', exact: true }).click();
+    await page.getByText('模拟保存失败，修改仍保留', { exact: true }).waitFor();
+    assert.equal(await input.inputValue(), edited);
+    assert.equal(await detailInput.inputValue(), detailEdited);
+    await page.getByRole('button', { name: '保存修改', exact: true }).click();
+    await panel.getByText('已保存，尚未开始生图', { exact: true }).waitFor();
+    await page.reload();
+    await panel.waitFor();
+    assert.equal(await input.inputValue(), edited);
+    assert.equal(await detailInput.inputValue(), detailEdited);
+    assert.equal((await db.detailRun.findUniqueOrThrow({ where: { id: run.id } })).status, 'WAITING_PROMPTS');
+    await detailInput.fill('');
+    assert.equal(await page.getByRole('button', { name: '确认全部 2 页并生成', exact: true }).isDisabled(), true);
+    await detailInput.fill(detailEdited);
+    // A competing save is visible, but must not replace this tab's unsaved draft.
+    await input.fill(`${edited}\n本地未保存修改`);
+    const other = (await db.detailRun.findUniqueOrThrow({ where: { id: run.id } })).checkpoint;
+    other.promptReview.revision++;
+    other.promptReview.pages[1].prompt += '\n另一页面保存的修改';
+    await db.detailRun.update({ where: { id: run.id }, data: { checkpoint: other } });
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await page.getByText('已保存的提示词有新版本，当前修改仍保留在此。请载入最新版本后再编辑和确认。', { exact: true }).waitFor();
+    assert.equal(await input.inputValue(), `${edited}\n本地未保存修改`);
+    await page.getByRole('button', { name: '放弃当前修改，载入最新版本', exact: true }).click();
+    assert.equal(await input.inputValue(), edited);
+    await page.screenshot({ path: 'test-output/browser-regression/prompt-review.png', fullPage: true });
+    await panel.screenshot({ path: 'test-output/browser-regression/prompt-review-panel.png' });
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+    assert.equal(await panel.getByRole('textbox').count(), 2);
+    assert.equal(await detailInput.isVisible(), true);
+    await panel.screenshot({ path: 'test-output/browser-regression/prompt-review-mobile.png' });
+    await page.route(`${base}/confirm-prompts`, async route => {
+      const body = route.request().postDataJSON();
+      confirmations.push(body);
+      if (confirmations.length === 1) return route.fulfill({ status: 409, json: { success: false, error: { code: 'TEST_FAILURE', message: '模拟提交断线，请查看状态后显式继续' } } });
+      // Paid dispatch and idempotent confirmation are covered by the isolated recovery suite.
+      await db.detailRun.update({ where: { id: run.id }, data: { status: 'CANCELED', stage: '测试确认已记录' } });
+      await route.fulfill({ status: 200, json: { success: true, data: {} } });
+    });
+    await page.getByRole('button', { name: '确认全部 2 页并生成', exact: true }).click();
+    await page.getByText('模拟提交断线，请查看状态后显式继续', { exact: true }).waitFor();
+    assert.equal(await input.inputValue(), edited);
+    await page.getByRole('button', { name: '确认全部 2 页并生成', exact: true }).click();
+    await panel.waitFor({ state: 'hidden' });
+    assert.equal(confirmations.length, 2);
+    assert.equal(confirmations[0].confirmationId, confirmations[1].confirmationId);
+    assert.equal(confirmations[1].revision, other.promptReview.revision);
+    assert.equal(confirmations[1].pages[0].prompt, edited);
+    assert.equal(confirmations[1].pages[1].prompt, other.promptReview.pages[1].prompt);
+    assert.ok(posts.every(url => /\/(save-prompts|confirm-prompts)$/.test(url)));
+    assert.deepEqual(errors, []);
+    console.log('PASS prompt review: every page, exact draft save/reload, failure retention, empty validation, stale tab protection, explicit confirmation and mobile layout');
+  } finally { await context.close(); }
+};

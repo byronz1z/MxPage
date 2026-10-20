@@ -76,6 +76,7 @@ export function handleRouteError(error: unknown) {
 
   if (error instanceof Error) {
     const code = (error as { code?: string }).code;
+    if (code === "PROMPT_REVIEW_CONFLICT") return fail(code, error.message, null, 409);
     if (code === "PROVIDER_CREDENTIALS_MISSING") return fail(code, "当前浏览器未提供此服务的 API Key。请在设置中填写对应服务的密钥；不同浏览器或设备需要分别配置。", { source: "local" }, 400);
     if (code === "PROVIDER_DISCOVERY_AUTH_ERROR") {
       const status = (error as Error & { status: number }).status;

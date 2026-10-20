@@ -1,7 +1,7 @@
 # MxPage contributor guide
 
 Read this file first when working on the repository. Product facts and links are in
-`llms.txt`; the current release is documented in `docs/releases/v0.3.0.md`.
+`llms.txt`; the current release is documented in `docs/releases/v0.3.1.md`.
 
 ## Project and commands
 
@@ -51,6 +51,10 @@ Read this file first when working on the repository. Product facts and links are
 4. Quality warnings retain generated images and do not trigger paid regeneration.
 5. Canonical text is `textBlocks[].text`. Line wrapping is local code. Allow natural
    rephrasing while preserving known specifications, table cells, numbers and units.
+   New detail tasks pause at `WAITING_PROMPTS` before image dispatch. Saved/approved
+   complete prompts take precedence over the compiled storyboard on every resume;
+   do not recompile over user edits or bypass the user's confirmation. Old tasks
+   without `promptReview` retain their original recovery behavior.
 6. Inferred supplemental answers are suggestions until selected. Preserve provenance;
    never silently turn unknown values into confirmed measurements.
 7. Use provider-discovered model IDs. Do not silently substitute models or hard-code

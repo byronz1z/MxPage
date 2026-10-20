@@ -3,6 +3,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { desktopRequest } from "./desktop";
 import { hash, type AgentSettings } from "./contracts";
+import { version } from "../../package.json";
 
 export async function connectMcpTools(settings: AgentSettings, tokens: Record<string, string>, runId?: string) {
   const clients: Client[] = [];
@@ -15,7 +16,7 @@ export async function connectMcpTools(settings: AgentSettings, tokens: Record<st
           func: async args => JSON.stringify(await desktopRequest("mcp_call", { runId, serverId: server.id, name: definition.name, args })),
         }));
       } else {
-        const client = new Client({ name: "MxPage", version: "0.3.0" });
+        const client = new Client({ name: "MxPage", version });
         await client.connect(new StreamableHTTPClientTransport(new URL(server.url), { requestInit: { headers: tokens[server.id] ? { Authorization: `Bearer ${tokens[server.id]}` } : {}, redirect: "error" } }), { timeout: 15000 });
         clients.push(client);
         const catalog = await client.listTools();

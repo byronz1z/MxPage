@@ -39,6 +39,26 @@ test("batch records replace their child runs and translation tasks", () => {
   assert.equal(detail.kind, "batch");
 });
 
+test("prompt approval remains actionable and batch summaries follow current child progress", () => {
+  const child = run({ status: "WAITING_PROMPTS", stage: "WAITING_PROMPTS", leaseToken: null, leaseUntil: null, checkpoint: { promptReview: { pages: [{ prompt: "private-user-prompt" }] }, images: [] } });
+  const single = buildTaskQueue([], [child], now.getTime())[0];
+  assert.equal(single.status, "WAITING_PROMPTS");
+  assert.equal(taskShouldShow(single), true);
+  assert.equal(taskIsRunning(single), false);
+  assert.doesNotMatch(JSON.stringify(single), /private-user-prompt/);
+  const parent = task({ status: "FAILED", taskType: "BATCH_CREATE", errorMessage: "old failure", inputPayload: { workflow: "detail-batch-v1" }, outputPayload: { items: [{ runId: child.id, status: "WAITING_PROMPTS" }] } });
+  const waiting = buildTaskQueue([parent], [child], now.getTime())[0];
+  assert.equal(waiting.status, "WAITING_PROMPTS");
+  assert.equal(waiting.error, undefined);
+  assert.equal(waiting.failed, 0);
+  const running = buildTaskQueue([parent], [{ ...child, status: "RUNNING", stage: "GENERATE" }], now.getTime())[0];
+  assert.equal(running.status, "RUNNING");
+  const done = buildTaskQueue([parent], [{ ...child, status: "COMPLETED" }], now.getTime())[0];
+  assert.equal(done.status, "SUCCESS");
+  assert.equal(done.completed, 1);
+  assert.equal(taskShouldShow(done), false);
+});
+
 test("partial results remain partial and stale workers are presented as interrupted without mutation", () => {
   const stale = run({ leaseUntil: new Date(now.getTime() - 1) });
   const staleTask = task({ id: "stale", inputPayload: { workflow: "detail-batch-v1" }, updatedAt: new Date(now.getTime() - 100_000) });
