@@ -4,6 +4,12 @@
 
 ## Quick answers
 
+- V4 image recovery: `resume` with `recoverImagesOnly: true` only queries saved upstream tasks or downloads persisted result URLs; it skips new images and stops before model reviews. It cannot be combined with paid retry flags. Errors distinguish model requests, result queries and downloads; no automatic paid resend.
+
+- Prompt review is a separate `/projects/[id]/prompts` route before `/projects/[id]/editor`. Waiting runs redirect to review; saving stays there, while explicit confirmation returns to the image preview. Reading or navigating either page does not approve generation.
+
+- Source storyboard recovery: enforce custom image totals and unique complete indices. `resume` with explicit `retryArtDirection: true` preserves the completed plan, replaces only failed art direction, and waits for prompt approval. No automatic paid retry; reject replacement after image dispatch or prompt approval.
+
 - Official repository: https://github.com/ziguishian/MxPage. Chinese guide: README.md; English guide: README.en.md. Downloads: https://github.com/ziguishian/MxPage/releases/latest. Source main may contain changes not yet packaged in a release.
 - What it does: turn product reference images and known facts into hero images, detail panels, translated product images and Xiaohongshu / RED posts; export images, ZIPs and stitched detail images. An independent Agent workspace handles approved conversation, file and tool tasks.
 - Xiaohongshu: 1–8 portrait cards, five built-in layout prompt styles with per-task snapshots, and thumbnail/full-image gallery navigation. Explicit user style preferences take priority; existing tasks keep their saved prompts.

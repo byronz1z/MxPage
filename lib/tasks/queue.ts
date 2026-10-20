@@ -39,8 +39,8 @@ export function buildTaskQueue(tasks: QueueTaskRow[], runs: QueueRunRow[], now =
     const kind: QueueKind = input.mode === "xhs" ? "xhs" : input.mode === "translate" ? "translation" : ["edit", "regenerate"].includes(input.mode) ? "image" : "detail";
     const interrupted = taskIsRunning(run) && (!run.leaseUntil || run.leaseUntil.getTime() < now);
     const requests = Object.values(record(cp.requests)).map(record);
-    const pendingQuery = requests.filter(r => r.state !== "completed" && r.state !== "succeeded" && r.upstreamTask?.id && r.upstreamTask.status !== "failed").length;
-    const uncertain = requests.filter(r => ["uncertain", "running"].includes(r.state) && !r.upstreamTask?.id).length;
+    const pendingQuery = requests.filter(r => r.state !== "completed" && r.state !== "succeeded" && (r.resultSource?.url || r.upstreamTask?.id && r.upstreamTask.status !== "failed")).length;
+    const uncertain = requests.filter(r => ["uncertain", "running"].includes(r.state) && !r.resultSource?.url && !r.upstreamTask?.id).length;
     const baseStatus = interrupted ? "INTERRUPTED" : run.status;
     const status = !taskIsRunning({ status: baseStatus }) && !["COMPLETED", "CANCELED", "WAITING_INPUT", "WAITING_PROMPTS"].includes(baseStatus) ? pendingQuery ? "PENDING_QUERY" : uncertain ? "UNCERTAIN" : baseStatus : baseStatus;
     const total = images.length || (["edit", "regenerate"].includes(input.mode) ? 1 : count(input.heroCount) + count(input.detailCount));

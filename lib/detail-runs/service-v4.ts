@@ -16,6 +16,7 @@ import { detailRunInputSchema, socialPostSchema, type DetailRunInput } from "./c
 import { xhsImageCount } from "./xhs";
 import { createXhsPromptPack, withXhsVisualMaster, type XhsPromptPack } from "./xhs-rules";
 import { invokeStructured } from "./structured-model";
+import { InvalidStoryboard, storyboardIssue } from "./storyboard-validation";
 import { normalizeTypesetting, type V4TextBlock } from "./typesetting-v4";
 import { buildCommerceSystemPrompt } from "@/lib/ai/prompts/ecommerce-system";
 import { materializeImagePrompts } from "./image-prompts-v4";
@@ -25,6 +26,7 @@ import { contentCoverageInstructions, contentCoverageSchema, contentPlacementSch
 import { workflowReferenceAssets } from "@/lib/utils/asset-purpose";
 import { claimRunLease, RunHalted, RUN_LEASE_MS } from "./run-lease";
 import { isStructuredSchemaRejection, requestErrorMessage } from "@/lib/utils/request-error";
+import { networkErrorCode } from "@/lib/utils/network-error";
 import { incompleteSupplementalEstimates, missingFieldSchema, normalizeSupplementalQuestions, resolveSupplementalSubmission, supplementalInputInstructions, supplementalQuestionsFromFields, supplementalQuestionIssues, supplementalSuggestionsSchema, type StoredSupplementalQuestion } from "./supplemental-input";
 
 const json = (value: unknown) => JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
@@ -58,7 +60,7 @@ type WorkflowPlan = z.infer<typeof planSchema> & { post?: z.infer<typeof socialP
 const imageReviewSchema = z.object({ passed: z.boolean(), issues: z.array(z.object({ kind: z.enum(["identity", "copy", "layout", "typography", "continuity"]), message: z.string().min(1).max(500), severity: z.enum(["warning", "error"]) })).max(10) });
 const setReviewSchema = z.object({ passed: z.boolean(), issues: z.array(z.object({ sectionIndexes: z.array(z.number().int().nonnegative()).min(1), message: z.string().min(1).max(500) })).max(8) });
 
-type RequestProgress = { state: "running" | "completed" | "uncertain" | "rejected"; requestId: string; error?: string; upstreamTask?: UpstreamImageTask };
+type RequestProgress = { state: "running" | "completed" | "uncertain" | "rejected"; requestId: string; error?: string; failureCode?: string; resultSource?: { url: string; mimeType?: string | null }; upstreamTask?: UpstreamImageTask };
 export type V4Checkpoint = {
   promptReview?: PromptReview;
   taskTiming?: TaskTiming;
@@ -66,6 +68,7 @@ export type V4Checkpoint = {
   workflowVersion: 4; stage: string; plan?: WorkflowPlan; artDirection?: z.infer<typeof directionSchema>; images: Array<{ sectionId: string; title: string; state: "pending" | "generating" | "generated" | "checked" | "uncertain"; assetId?: string; correctionCount: number; check?: z.infer<typeof imageReviewSchema> }>; imageReviews: Record<string, z.infer<typeof imageReviewSchema>>; setReview?: z.infer<typeof setReviewSchema>; missingFields?: z.infer<typeof planSchema>["missingFields"]; questions?: StoredSupplementalQuestion[]; answers: string[]; attempts: Record<string, number>; timings: Record<string, { startedAt: string; finishedAt?: string }>; lastError?: { stage: string; code: string; message: string; retryable: boolean };
   requests?: Record<string, RequestProgress>;
   retryAuthorized?: string[];
+  recoverImagesOnly?: boolean;
   setReviewGroups?: Record<string, { assetIds: string[]; result: z.infer<typeof setReviewSchema> }>;
   setReviewAssetIds?: string[];
   contentRepairRequested?: boolean;
@@ -254,12 +257,24 @@ export async function controlV4DetailRun(projectId: string, runId: string, actio
   }
   for (const request of Object.values(cp.requests)) if (request.state === "running") request.state = "uncertain";
   for (const image of cp.images) if (image.state === "generating") image.state = "uncertain";
-  const { retryUncertain } = z.object({ retryUncertain: z.boolean().default(false) }).parse(raw ?? {});
+  const { retryUncertain, retryArtDirection, recoverImagesOnly } = z.object({ retryUncertain: z.boolean().default(false), retryArtDirection: z.boolean().default(false), recoverImagesOnly: z.boolean().default(false) }).parse(raw ?? {});
+  if (recoverImagesOnly && (action !== "resume" || retryUncertain || retryArtDirection)) throw new Error("仅恢复已有图片不能同时授权模型重试。");
+  cp.recoverImagesOnly = recoverImagesOnly;
+  if (recoverImagesOnly && (!cp.plan || !cp.artDirection)) throw new Error("缺少已保存的规划或分镜，不能仅恢复图片。");
   // One click grants a single new attempt only for requests already uncertain at that click.
   cp.retryAuthorized = retryUncertain ? [
     ...Object.entries(cp.requests).filter(([key, request]) => request.state === "uncertain" && !key.startsWith("GENERATE:")).map(([key]) => key),
     ...cp.images.filter(image => !image.assetId && image.state === "uncertain" && image.correctionCount < 1).map(image => `GENERATE:${image.sectionId}`),
   ] : [];
+  if (action === "resume" && retryArtDirection) {
+    const expected = (run.input as unknown as DetailRunInput).heroCount + (run.input as unknown as DetailRunInput).detailCount;
+    const invalid = cp.artDirection && storyboardIssue(cp.artDirection.sections, expected);
+    if (!cp.plan || !(invalid || cp.lastError?.stage === "ART_DIRECTION")) throw new Error("当前没有可重试的失败分镜。");
+    if (cp.images.some(image => image.assetId || image.state !== "pending") || Object.keys(cp.requests).some(key => key.startsWith("GENERATE:")) || cp.promptReview?.approvedAt) throw new Error("已确认提示词或已发起图片请求，不能重做分镜。");
+    cp.artDirection = undefined;
+    cp.retryAuthorized = ["ART_DIRECTION"];
+    cp.promptReview = { revision: (cp.promptReview?.revision ?? 0) + 1, pages: [] };
+  }
   if (action === "suggestions") {
     if (run.status !== "WAITING_INPUT") throw new Error("当前任务没有待补充的问题。");
     const issue = supplementalQuestionIssues(normalizeSupplementalQuestions(cp.questions), (cp.plan?.missingFields || []).map(field => field.field));
@@ -327,12 +342,13 @@ async function executeV4(runId: string) {
   const requestOnce = async <T>(key: string, invoke: (requestId: string) => Promise<T>, save: (result: T) => void) => {
     await lease.assertActive();
     const previous = cp.requests![key];
-    const queryExisting = key.startsWith("GENERATE:") && previous?.upstreamTask && previous.upstreamTask.status !== "failed";
+    const queryExisting = key.startsWith("GENERATE:") && (previous?.resultSource || (previous?.upstreamTask && previous.upstreamTask.status !== "failed"));
     const authorized = cp.retryAuthorized?.includes(key);
+    if (cp.recoverImagesOnly && !queryExisting) throw new Error("仅恢复已有图片：未发起新的模型请求，请单独确认后继续任务。");
     if (previous && previous.state !== "rejected" && !authorized && !queryExisting) throw new Error(`${key} 上次请求结果未确认，已跳过；如需重新请求，请勾选可能再次计费的重试选项。`);
     cp.retryAuthorized = cp.retryAuthorized?.filter(item => item !== key);
-    const requestId = queryExisting ? previous.requestId : randomUUID();
-    cp.requests![key] = { state: "running", requestId, ...(queryExisting ? { upstreamTask: previous.upstreamTask } : {}) };
+    const requestId = queryExisting ? previous!.requestId : randomUUID();
+    cp.requests![key] = { state: "running", requestId, ...(queryExisting ? { upstreamTask: previous!.upstreamTask, resultSource: previous!.resultSource } : {}) };
     const previousTiming = cp.requestTimings![key];
     const timing = startTiming(previousTiming);
     cp.requestTimings![key] = { ...timing, firstStartedAt: previousTiming?.firstStartedAt || previousTiming?.startedAt || timing.startedAt };
@@ -347,9 +363,16 @@ async function executeV4(runId: string) {
       await persist();
       return result;
     } catch (error) {
+      const originalCode = (error as { code?: string })?.code;
+      if (!originalCode || networkErrorCode(error) === originalCode) {
+        if (networkErrorCode(error) || /fetch failed|network error|terminated|timeout|timed out/i.test(error instanceof Error ? error.message : "")) {
+          const code = /timeout|timed out/i.test(error instanceof Error ? error.message : "") ? "MODEL_REQUEST_TIMEOUT" : "MODEL_REQUEST_FAILED";
+          error = Object.assign(new Error(requestErrorMessage({ code }), { cause: error }), { code });
+        }
+      }
       // The provider may have accepted/billed a request even when no result reached us.
       cp.requestTimings![key] = { ...cp.requestTimings![key], ...touchTiming(cp.requestTimings![key], true) };
-      cp.requests![key] = { ...cp.requests![key], state: isStructuredSchemaRejection(error) || (error as { code?: string })?.code === "LOCAL_BUDGET_PAUSED" ? "rejected" : "uncertain", requestId, error: requestErrorMessage(error, "请求结果未确认，已有结果已保留。") };
+      cp.requests![key] = { ...cp.requests![key], state: isStructuredSchemaRejection(error) || (error as { code?: string })?.code === "LOCAL_BUDGET_PAUSED" ? "rejected" : "uncertain", requestId, failureCode: (error as { code?: string })?.code, error: requestErrorMessage(error, "请求结果未确认，已有结果已保留。") };
       await persist();
       throw error;
     }
@@ -465,9 +488,12 @@ async function executeV4(runId: string) {
     });
     await end("PLAN");
     await begin("ART_DIRECTION");
-    const art = cp.artDirection ?? await requestOnce("ART_DIRECTION", requestId => invokeStructured({ ...textSettings(input.providerSnapshot || {}), apiKey, baseUrl: provider.baseUrl, model: input.planningModelId, schema: directionSchema, system: input.xhsPromptPack?.artDirection || `${buildCommerceSystemPrompt(current.platform, ["hero_search", "feature_proof", "lifestyle", "material_closeup", "specification", "trust", "summary"])}\n${confirmedAnswerCopyRules}\n你是视觉分镜模型。只返回完整 JSON。根据完整内容任务设计每张图的构图、光线、场景、文字和信息模块，sectionIndex必须对应规划从0开始的下标。plan.sections[].copy 是内容基础，可以自然润色标题、调整句式、标点和换行，无需逐字复刻；保持完整买家信息、参数标签、数值、单位和尺寸表，不把完整页面简化成只有标题。不要删除页面，不要编造规格。每张最终prompt必须完整描述主体、镜头、环境、光线、配色、细节/信息模块与排版，最终可见文字以textBlocks为准；不能只写标题或依赖前一张图。按内容安排场景、微距、标注、信息图与规格表，避免所有页面同一背景加整件产品。`, input: JSON.stringify({ plan, platform: current.platform, language: input.language, userInstruction, referenceRoles, brief: input.xhsPromptPack?.brief }), images: visualImages, timeoutMs: Math.max(90000, Math.min(180000, expected * 15000)), maxAttempts: 1, requestId, monitor: { projectId, runId, operation: "v4_art_direction" } }), result => { cp.artDirection = result; });
+    const requestDirectionSchema = directionSchema.extend({ sections: directionSchema.shape.sections.length(expected) });
+    const art = cp.artDirection ?? await requestOnce("ART_DIRECTION", requestId => invokeStructured({ ...textSettings(input.providerSnapshot || {}), apiKey, baseUrl: provider.baseUrl, model: input.planningModelId, schema: requestDirectionSchema, system: input.xhsPromptPack?.artDirection || `${buildCommerceSystemPrompt(current.platform, ["hero_search", "feature_proof", "lifestyle", "material_closeup", "specification", "trust", "summary"])}\n${confirmedAnswerCopyRules}\n你是视觉分镜模型。只返回完整 JSON。根据完整内容任务设计每张图的构图、光线、场景、文字和信息模块，sectionIndex必须对应规划从0开始的下标。plan.sections[].copy 是内容基础，可以自然润色标题、调整句式、标点和换行，无需逐字复刻；保持完整买家信息、参数标签、数值、单位和尺寸表，不把完整页面简化成只有标题。不要删除页面，不要编造规格。每张最终prompt必须完整描述主体、镜头、环境、光线、配色、细节/信息模块与排版，最终可见文字以textBlocks为准；不能只写标题或依赖前一张图。按内容安排场景、微距、标注、信息图与规格表，避免所有页面同一背景加整件产品。`, input: JSON.stringify({ plan, expectedSectionCount: expected, sectionSlots, sectionIndexRule: "Return exactly one section per slot, with unique sectionIndex from 0 to expectedSectionCount - 1. Do not merge or omit slots.", platform: current.platform, language: input.language, userInstruction, referenceRoles, brief: input.xhsPromptPack?.brief }), images: visualImages, timeoutMs: Math.max(90000, Math.min(180000, expected * 15000)), maxAttempts: 1, requestId, monitor: { projectId, runId, operation: "v4_art_direction" } }).catch(error => { if (error instanceof z.ZodError) throw new InvalidStoryboard(`视觉分镜结构不合格，需要 ${expected} 张完整分镜。请确认后仅重试分镜，已完成规划会保留。`); throw error; }), result => { cp.artDirection = result; });
     const savedSections = await prisma.pageSection.findMany({ where: { projectId, sectionKey: { in: plan.sections.map((_, index) => `v4-${index}`) } }, orderBy: { order: "asc" } });
-    if (art.sections.length !== expected) throw new Error("视觉分镜数量与页面数量不一致");
+    const artIssue = storyboardIssue(art.sections, expected);
+    if (artIssue) throw new InvalidStoryboard(artIssue);
+    art.sections.sort((a, b) => a.sectionIndex - b.sectionIndex);
     const readableCopy = prepareReadableCopy(plan.sections, confirmedEstimates ? art.sections.map(cleanCustomerDirection) : art.sections);
     const normalizedArt = { ...art, sections: readableCopy.sections.map((section) => ({ ...section, textBlocks: normalizeTypesetting(section.textBlocks as V4TextBlock[]) })) };
     cp.artDirection = normalizedArt;
@@ -519,25 +545,27 @@ async function executeV4(runId: string) {
       if (progress.assetId) return;
       const key = `GENERATE:${section.id}`;
       const upstreamTask = cp.requests![key]?.upstreamTask;
-      const queryExisting = upstreamTask && upstreamTask.status !== "failed";
+      const queryExisting = cp.requests![key]?.resultSource || (upstreamTask && upstreamTask.status !== "failed");
+      if (cp.recoverImagesOnly && !queryExisting) return;
       if (progress.state === "uncertain" && !queryExisting && (!cp.retryAuthorized?.includes(key) || progress.correctionCount >= 1)) return;
       await lease.assertActive();
       if (progress.state === "uncertain" && !queryExisting) progress.correctionCount++;
       progress.state = "generating"; await persist(`GENERATE:${section.title}`);
       try {
         await requestOnce(key, async requestId => {
-          const source = await adapter.generateImageOnce({ model: section.type === "HERO" ? input.heroModelId || input.imageModelId : input.imageModelId, prompt: section.visualPrompt, quality: input.quality, background: settings.background, outputFormat: settings.outputFormat, outputCompression: settings.outputCompression, moderation: settings.moderation, ...(settings.size && settings.size !== "auto" ? { size: settings.size } : { aspectRatio: section.type === "HERO" ? "1:1" : "3:4" }), referenceImages: visualImages, timeoutMs: 180000, monitor: { projectId, sectionId: section.id, runId, operation: "v4_image_generation" },
+          const source = cp.requests![key].resultSource ?? await adapter.generateImageOnce({ model: section.type === "HERO" ? input.heroModelId || input.imageModelId : input.imageModelId, prompt: section.visualPrompt, quality: input.quality, background: settings.background, outputFormat: settings.outputFormat, outputCompression: settings.outputCompression, moderation: settings.moderation, ...(settings.size && settings.size !== "auto" ? { size: settings.size } : { aspectRatio: section.type === "HERO" ? "1:1" : "3:4" }), referenceImages: visualImages, timeoutMs: 180000, monitor: { projectId, sectionId: section.id, runId, operation: "v4_image_generation" },
             upstreamTask: cp.requests![key].upstreamTask,
             onUpstreamTask: async task => { cp.requests![key].upstreamTask = task; await persist(); },
-            beforeSubmit: () => lease.assertActive(),
+            beforeSubmit: async () => { if (cp.recoverImagesOnly) throw new Error("仅恢复已有图片，禁止提交新的生图请求。"); await lease.assertActive(); },
           });
+          if (source.url) { cp.requests![key].resultSource = { url: source.url }; await persist(); }
           const asset = await saveGeneratedImage({ projectId, sectionId: section.id, prompt: section.visualPrompt, source, metadata: { runId, requestId, workflowVersion: 4 } });
           await lease.transaction(async tx => { await tx.pageSection.update({ where: { id: section.id }, data: { currentImageAssetId: asset.id, status: "SUCCESS" } }); }, true);
           return asset;
         }, asset => { progress.assetId = asset.id; progress.state = "generated"; });
       } catch (error) {
         if (error instanceof RunHalted) throw error;
-        progress.state = "uncertain"; cp.lastError = { stage: "GENERATE", code: isTimeout(error) ? "TIMEOUT" : "IMAGE_REQUEST_FAILED", message: requestErrorMessage(error, "图片请求结果未确认，已保存的图片会保留。"), retryable: false }; await persist();
+        progress.state = "uncertain"; cp.lastError = { stage: "GENERATE", code: (error as { code?: string })?.code || (isTimeout(error) ? "TIMEOUT" : "IMAGE_REQUEST_FAILED"), message: requestErrorMessage(error, "模型请求未完成，请核对调用记录后再决定是否重新请求。"), retryable: false }; await persist();
         // Drain issued calls, but do not send every image to an unsupported route.
         if (isImageEndpointError(error)) throw error;
       }
@@ -552,6 +580,15 @@ async function executeV4(runId: string) {
       if (failure?.status === "rejected") throw failure.reason;
     }
     await end("GENERATE");
+    if (cp.recoverImagesOnly) {
+      cp.recoverImagesOnly = false;
+      cp.retryAuthorized = [];
+      if (!cp.images.some(image => !image.assetId)) cp.lastError = undefined;
+      cp.stage = "PARTIAL";
+      cp.taskTiming = touchTiming(cp.taskTiming!, true);
+      await lease.transaction(async tx => { await tx.detailRun.update({ where: { id: runId }, data: { status: "PARTIAL", stage: "已有图片恢复结束，未发起模型生成或质量检查", error: cp.lastError?.message || null, checkpoint: json(cp) } }); });
+      return;
+    }
     await begin("IMAGE_REVIEW");
     for (const progress of cp.images.filter(i => i.assetId && i.state === "generated")) {
       try {
@@ -616,7 +653,7 @@ async function executeV4(runId: string) {
       return;
     }
     cp.taskTiming = touchTiming(cp.taskTiming!, true);
-    cp.lastError = { stage: cp.stage, code: isStructuredSchemaRejection(error) ? "PROVIDER_SCHEMA_REJECTED" : isTimeout(error) ? "TIMEOUT" : "WORKFLOW_FAILED", message: requestErrorMessage(error, "当前步骤未完成，草稿和已生成的图片已保留。"), retryable: isStructuredSchemaRejection(error) };
+    cp.lastError = { stage: cp.stage, code: error instanceof InvalidStoryboard ? error.code : isStructuredSchemaRejection(error) ? "PROVIDER_SCHEMA_REJECTED" : isTimeout(error) ? "TIMEOUT" : "WORKFLOW_FAILED", message: requestErrorMessage(error, "当前步骤未完成，草稿和已生成的图片已保留。"), retryable: isStructuredSchemaRejection(error) };
     await persistQueue.catch(() => undefined);
     try { await lease.transaction(async tx => { await tx.detailRun.update({ where: { id: runId }, data: { status: cp.images.some(i => i.assetId) ? "PARTIAL" : "FAILED", stage: `「${cp.stage}」阶段未完成，草稿已保留`, error: cp.lastError!.message, checkpoint: json(cp) } }); }); } catch (failure) { if (!(failure instanceof RunHalted)) throw failure; }
   } finally {

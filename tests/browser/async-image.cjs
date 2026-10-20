@@ -13,7 +13,7 @@ module.exports = async function checkAsyncImage(browser, baseUrl, db) {
     page.on('pageerror', error => errors.push(error.message));
     page.on('request', request => { if (request.method() === 'POST') mutations.push(request.url()); });
     await page.goto(`${baseUrl}/projects/${project.id}/editor`);
-    await page.getByText('1 张图片已有上游任务编号；继续时查询原结果，不重新提交这些图片。', { exact: true }).waitFor();
+    await page.getByText('1 张图片已有任务编号或结果地址，可单独恢复，不重新生图、不调用质量检查模型。', { exact: true }).waitFor();
     assert.equal(await page.getByText('重试结果不确定的请求，可能产生额外费用', { exact: true }).count(), 0);
     assert.equal(mutations.length, 0);
     let resumeBody;
@@ -23,15 +23,15 @@ module.exports = async function checkAsyncImage(browser, baseUrl, db) {
     });
     await Promise.all([
       page.waitForResponse(response => response.url().endsWith(`/detail-runs/${run.id}/resume`)),
-      page.getByRole('button', { name: '继续未完成部分', exact: true }).click(),
+      page.getByRole('button', { name: '仅恢复已有图片（查询 / 下载）', exact: true }).click(),
     ]);
-    assert.equal(resumeBody?.retryUncertain, false);
+    assert.deepEqual(resumeBody, { recoverImagesOnly: true });
     assert.equal(mutations.length, 1);
     checkpoint.requests[`GENERATE:${section.id}`].upstreamTask.status = 'failed';
     await db.detailRun.update({ where: { id: run.id }, data: { checkpoint } });
     await page.reload();
     await page.getByText('重试结果不确定的请求，可能产生额外费用', { exact: true }).waitFor();
-    assert.equal(await page.getByText(/张图片已有上游任务编号/).count(), 0);
+    assert.equal(await page.getByText(/张图片已有任务编号或结果地址/).count(), 0);
     const task = await db.generationTask.create({ data: { projectId: project.id, sectionId: section.id, taskType: 'GENERATE', status: 'FAILED', inputPayload: {}, outputPayload: { imageRecovery: { model: 'mock-original' }, upstreamImageTask: { id: 'mock-receipt', protocol: 'evolink_tasks', status: 'pending' } } } });
     await page.route(`**/api/tasks/${task.id}/query-image`, route => route.fulfill({ status: 200, json: { success: true, data: { outputPayload: { imageUrl: '/api/files/mock-recovered.png' } } } }));
     await page.goto(`${baseUrl}/tasks`);

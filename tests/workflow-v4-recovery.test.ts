@@ -183,6 +183,75 @@ before(async () => {
   };
 });
 beforeEach(() => { calls = []; peak = 0; respond = success; });
+for (const [heroes, details] of [[0, 1], [3, 3], [4, 6], [10, 20]]) {
+  test(`custom storyboard ${heroes}+${details} preserves plan and waits for prompt approval`, async () => {
+    const projectId = await project();
+    const input = { idempotencyKey: randomUUID(), heroCount: heroes, detailCount: details, mode: "create", quality: "low" };
+    const created = await runtime.runWithProviderCredentials(credentials, () => service.createV4DetailRun(projectId, input, credentials));
+    const run = await settled(created!.id, false);
+    assert.equal(run.status, "WAITING_PROMPTS");
+    assert.equal(cpOf(run).artDirection!.sections.length, heroes + details);
+    const call = calls.find(call => call.kind === "ART_DIRECTION")!;
+    assert.equal(call.input.expectedSectionCount, heroes + details);
+    assert.equal(call.body.response_format.json_schema.schema.properties.sections.minItems, heroes + details);
+    assert.equal(call.body.response_format.json_schema.schema.properties.sections.maxItems, heroes + details);
+    assert.equal(count("PLAN"), 1);
+    assert.equal(count("GENERATE"), 0);
+  });
+}
+
+for (const invalid of ["short", "duplicate", "out-of-range", "extra"]) {
+  test(`invalid storyboard ${invalid} requires consent and retries only art direction`, async () => {
+    respond = async call => {
+      if (call.kind !== "ART_DIRECTION") return success(call);
+      const result = art(call.input.plan);
+      if (invalid === "short") result.sections.pop();
+      if (invalid === "extra") result.sections.push(result.sections[0]);
+      if (invalid === "duplicate") result.sections[1].sectionIndex = 0;
+      if (invalid === "out-of-range") result.sections[1].sectionIndex = 99;
+      return completion(result);
+    };
+    const fixture = await start();
+    let run = await settled(fixture.runId, false);
+    assert.equal(run.status, "FAILED");
+    assert.equal(cpOf(run).lastError?.code, "ART_DIRECTION_INVALID");
+    const savedPlan = cpOf(run).plan;
+    await resume(fixture.projectId, fixture.runId);
+    assert.equal(count("ART_DIRECTION"), 1);
+    assert.equal(count("PLAN"), 1);
+    respond = success;
+    await runtime.runWithProviderCredentials(credentials, () => service.controlV4DetailRun(fixture.projectId, fixture.runId, "resume", { retryArtDirection: true }, credentials));
+    run = await settled(fixture.runId, false);
+    assert.equal(run.status, "WAITING_PROMPTS");
+    assert.deepEqual(cpOf(run).plan, savedPlan);
+    assert.equal(count("PLAN"), 1);
+    assert.equal(count("ART_DIRECTION"), 2);
+    assert.equal(count("GENERATE"), 0);
+  });
+}
+
+test("legacy completed invalid storyboard is replaced only after explicit consent", async () => {
+  const fixture = await seed({ total: 10, stage: "ART_DIRECTION", status: "FAILED" });
+  fixture.checkpoint.artDirection!.sections.pop();
+  fixture.checkpoint.requests!.ART_DIRECTION = { state: "completed", requestId: "old-art" };
+  await saveCheckpoint(fixture.runId, fixture.checkpoint);
+  await resume(fixture.projectId, fixture.runId);
+  assert.equal(calls.length, 0);
+  await runtime.runWithProviderCredentials(credentials, () => service.controlV4DetailRun(fixture.projectId, fixture.runId, "resume", { retryArtDirection: true }, credentials));
+  const run = await settled(fixture.runId, false);
+  assert.equal(run.status, "WAITING_PROMPTS");
+  assert.equal(count("PLAN"), 0);
+  assert.equal(count("ART_DIRECTION"), 1);
+  assert.equal(count("GENERATE"), 0);
+});
+
+test("storyboard retry cannot replace already generated images", async () => {
+  const fixture = await seed({ generated: [0], stage: "ART_DIRECTION" });
+  fixture.checkpoint.lastError = { stage: "ART_DIRECTION", code: "ART_DIRECTION_INVALID", message: "invalid", retryable: false };
+  await saveCheckpoint(fixture.runId, fixture.checkpoint);
+  await assert.rejects(runtime.runWithProviderCredentials(credentials, () => service.controlV4DetailRun(fixture.projectId, fixture.runId, "resume", { retryArtDirection: true }, credentials)), /不能重做分镜/);
+  assert.equal(calls.length, 0);
+});
 after(async () => {
   globalThis.fetch = originalFetch;
   await db?.$disconnect();
@@ -1178,9 +1247,104 @@ test("downloading an image result has an abort signal and never falls back to re
     downloads++; assert.ok(init.signal instanceof AbortSignal);
     throw new DOMException("Download timed out", "TimeoutError");
   }) as any);
-  await assert.rejects(storage.saveGeneratedImage({ projectId: fixture.projectId, sectionId: fixture.checkpoint.images[0].sectionId, prompt: "Test", source: { url: "https://workflow.test/result.png" } }), /timed out/);
+  await assert.rejects(storage.saveGeneratedImage({ projectId: fixture.projectId, sectionId: fixture.checkpoint.images[0].sectionId, prompt: "Test", source: { url: "https://workflow.test/result.png" } }), { code: "IMAGE_DOWNLOAD_FAILED" });
   assert.equal(downloads, 1); assert.equal(count("GENERATE"), 0);
   assert.equal(await db.productAsset.count({ where: { projectId: fixture.projectId, type: "GENERATED" } }), 0);
+});
+
+test("download-only recovery retains URLs on failure and never generates or reviews images", async t => {
+  const fixture = await seed({ generated: [0, 1, 2, 3, 4], checked: true });
+  const image = fixture.checkpoint.images[5];
+  image.state = "uncertain";
+  const key = `GENERATE:${image.sectionId}`;
+  fixture.checkpoint.requests![key] = { state: "uncertain", requestId: "original-request", failureCode: "IMAGE_DOWNLOAD_FAILED", resultSource: { url: "https://workflow.test/result.png" } };
+  await saveCheckpoint(fixture.runId, fixture.checkpoint);
+  let downloads = 0, fail = true;
+  t.mock.method(globalThis, "fetch", (async (url: unknown, init: RequestInit) => {
+    assert.equal(String(url), "https://workflow.test/result.png");
+    assert.ok(!init.method || init.method === "GET");
+    downloads++;
+    if (fail) throw new TypeError("fetch failed");
+    return new Response(new Uint8Array(png));
+  }) as any);
+  const recover = async () => {
+    await runtime.runWithProviderCredentials(credentials, () => service.controlV4DetailRun(fixture.projectId, fixture.runId, "resume", { recoverImagesOnly: true }, credentials));
+    return settled(fixture.runId, false);
+  };
+  let run = await recover();
+  assert.equal(downloads, 1);
+  assert.equal(cpOf(run).requests![key].failureCode, "IMAGE_DOWNLOAD_FAILED");
+  assert.ok(cpOf(run).requests![key].resultSource);
+  assert.equal(count("GENERATE"), 0);
+  fail = false;
+  run = await recover();
+  assert.equal(downloads, 2);
+  assert.ok(cpOf(run).images[5].assetId);
+  assert.equal(cpOf(run).images[6].assetId, undefined);
+  assert.equal(cpOf(run).requests![key].requestId, "original-request");
+  assert.equal(run.status, "PARTIAL");
+  assert.equal(calls.length, 0);
+  await assert.rejects(service.controlV4DetailRun(fixture.projectId, fixture.runId, "resume", { recoverImagesOnly: true, retryUncertain: true }, credentials), /不能同时/);
+});
+
+test("a newly returned URL survives failed download and explicit recovery does not repeat generation", async t => {
+  const fixture = await seed({ generated: [0, 1, 2, 3, 4, 5], checked: true });
+  const key = `GENERATE:${fixture.checkpoint.images[6].sectionId}`;
+  const mockFetch = globalThis.fetch;
+  let fail = true;
+  respond = async call => call.kind === "GENERATE" ? Response.json({ data: [{ url: "https://workflow.test/result.png" }] }) : success(call);
+  t.mock.method(globalThis, "fetch", (async (url: unknown, init: RequestInit) => {
+    if (String(url) === "https://workflow.test/result.png") {
+      if (fail) throw new TypeError("fetch failed");
+      return new Response(new Uint8Array(png));
+    }
+    return mockFetch(url as string, init);
+  }) as any);
+  let run = await resume(fixture.projectId, fixture.runId);
+  assert.equal(count("GENERATE"), 1);
+  assert.equal(cpOf(run).requests![key].resultSource?.url, "https://workflow.test/result.png");
+  assert.equal(cpOf(run).lastError?.code, "IMAGE_DOWNLOAD_FAILED");
+  calls = []; fail = false;
+  await runtime.runWithProviderCredentials(credentials, () => service.controlV4DetailRun(fixture.projectId, fixture.runId, "resume", { recoverImagesOnly: true }, credentials));
+  run = await settled(fixture.runId, false);
+  assert.ok(cpOf(run).images[6].assetId);
+  assert.equal(calls.length, 0);
+});
+
+test("query-only recovery never POSTs and pauses before model checks", async t => {
+  const fixture = await seed({ generated: [0, 1, 2, 3, 4], checked: true });
+  const provider = await db.providerConfig.findFirstOrThrow({ where: { isActive: true } });
+  await db.providerConfig.update({ where: { id: provider.id }, data: { baseUrl: "https://api.evolink.ai/v1" } });
+  t.after(async () => { await db.providerConfig.update({ where: { id: provider.id }, data: { baseUrl: provider.baseUrl } }); });
+  const queryCredentials = { ...credentials, baseUrl: "https://api.evolink.ai/v1" };
+  const key = `GENERATE:${fixture.checkpoint.images[5].sectionId}`;
+  fixture.checkpoint.images[5].state = "uncertain";
+  fixture.checkpoint.requests![key] = { state: "uncertain", requestId: "saved-query", upstreamTask: { protocol: "evolink_tasks", id: "saved-task", status: "pending" } };
+  await saveCheckpoint(fixture.runId, fixture.checkpoint);
+  let fail = true, queries = 0;
+  t.mock.method(globalThis, "fetch", (async (url: unknown, init: RequestInit) => {
+    assert.ok(!init.method || init.method === "GET", "recovery must never POST");
+    if (String(url).endsWith("/tasks/saved-task")) {
+      queries++;
+      if (fail) throw new TypeError("fetch failed");
+      return Response.json({ id: "saved-task", status: "completed", results: ["https://workflow.test/result.png"] });
+    }
+    assert.equal(String(url), "https://workflow.test/result.png");
+    return new Response(new Uint8Array(png));
+  }) as any);
+  const recover = async () => {
+    await runtime.runWithProviderCredentials(queryCredentials, () => service.controlV4DetailRun(fixture.projectId, fixture.runId, "resume", { recoverImagesOnly: true }, queryCredentials));
+    return settled(fixture.runId, false);
+  };
+  let run = await recover();
+  assert.equal(cpOf(run).requests![key].failureCode, "IMAGE_RESULT_QUERY_FAILED", JSON.stringify({ error: cpOf(run).lastError, request: cpOf(run).requests![key] }));
+  assert.equal(cpOf(run).requests![key].upstreamTask?.id, "saved-task");
+  fail = false;
+  run = await recover();
+  assert.equal(queries, 2);
+  assert.ok(cpOf(run).images[5].assetId);
+  assert.equal(cpOf(run).images[6].assetId, undefined);
+  assert.equal(calls.length, 0);
 });
 
 test("single-attempt image generation never falls back to another endpoint on an ambiguous server error", async () => {

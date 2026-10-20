@@ -1,5 +1,11 @@
 # MxPage · AI e-commerce image workspace
 
+Source update: storyboards enforce the requested hero/detail total and unique, complete page indices. Explicitly consenting to a potentially billed storyboard retry preserves the completed plan and retries only art direction. The recovered run waits for page-prompt approval before generating images.
+
+Prompt review has its own `/projects/[id]/prompts` page before the final image preview. Saving stays on the review page; explicit generation approval opens the image preview. Pending prompt reviews automatically redirect there from the existing editor entry.
+
+Workflow errors distinguish model requests, result queries and image downloads. Ambiguous model retries require explicit billing consent. Recovering existing images only queries saved task IDs or downloads saved result URLs, then pauses without generation or model review requests.
+
 [简体中文](README.md) · **English** · [Desktop downloads](https://github.com/ziguishian/MxPage/releases/latest) · [Release notes](docs/releases/v0.3.2.md) · [AI documentation](llms.txt)
 
 MxPage is an MIT-licensed, locally deployable workspace for product hero images, complete e-commerce detail pages, batch image translation and Xiaohongshu / RED posts. Maintained by **Lingju Huijing (灵矩绘境 / MatrixInspire)**.

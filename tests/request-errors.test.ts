@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { z } from "zod";
 import { readApiResponse, ApiRequestError, requestErrorMessage, fetchApiProgress, isStructuredSchemaRejection } from "../lib/utils/request-error";
+
+test("workflow failures identify model, query and download recovery separately", () => {
+  assert.match(requestErrorMessage({ code: "MODEL_REQUEST_FAILED", message: "fetch failed" }), /模型请求失败/);
+  assert.match(requestErrorMessage({ code: "IMAGE_RESULT_QUERY_FAILED", message: "fetch failed" }), /查询失败/);
+  assert.match(requestErrorMessage({ code: "IMAGE_DOWNLOAD_FAILED", message: "fetch failed" }), /下载失败/);
+});
 import { handleRouteError } from "../lib/utils/route";
 
 test("HTML gateways, empty responses and corrupt JSON produce actionable feedback without parser errors", async () => {

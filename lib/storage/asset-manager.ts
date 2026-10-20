@@ -107,11 +107,14 @@ export async function saveGeneratedImage(params: {
   } else if (params.source.b64Json) {
     await fs.writeFile(absolutePath, Buffer.from(params.source.b64Json, "base64"));
   } else if (params.source.url) {
-    const response = await fetch(params.source.url, { signal: AbortSignal.timeout(45000) });
-    if (!response.ok) {
-      throw new Error(`Failed to download generated image: ${response.status}`);
+    let bytes: Buffer;
+    try {
+      const response = await fetch(params.source.url, { signal: AbortSignal.timeout(45000) });
+      if (!response.ok) throw new Error(`Image download HTTP ${response.status}`);
+      bytes = Buffer.from(await response.arrayBuffer());
+    } catch (cause) {
+      throw Object.assign(new Error("图片已生成，但下载失败。请使用“仅恢复已有图片”重新下载，不需要重新生图。", { cause }), { code: "IMAGE_DOWNLOAD_FAILED" });
     }
-    const bytes = Buffer.from(await response.arrayBuffer());
     await fs.writeFile(absolutePath, bytes);
   } else {
     throw new Error("Image generation produced no usable image output.");

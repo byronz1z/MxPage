@@ -8,6 +8,7 @@ import { ImageGenerationLoading } from "@/components/shared/image-generation-loa
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Loader2, Download, ChevronLeft, ChevronRight, Smartphone, LayoutGrid, Expand, X } from "lucide-react";
 import * as Dialog from "@radix-ui/react-dialog";
@@ -30,11 +31,12 @@ import type { RunCheckpoint } from "@/lib/detail-runs/contracts";
 import { designIssueLabel } from "@/lib/detail-runs/art-direction";
 import { ApiRequestError, fetchApiProgress, readApiResponse as read, requestErrorMessage } from "@/lib/utils/request-error";
 
-type Run = { createdAt?: string; updatedAt?: string; id: string; status: string; stage: string; error?: string; draining?: boolean; input?: { heroCount?: number; detailCount?: number }; timingHistory?: TimingHistoryEntry[]; checkpoint: RunCheckpoint & { workflowVersion?: number; promptReview?: PromptReview; setReviewAssetIds?: string[]; requests?: Record<string, { state: string; upstreamTask?: import("@/lib/ai/provider-client").UpstreamImageTask }>; requestTimings?: Record<string, RequestTiming> } };
+type Run = { createdAt?: string; updatedAt?: string; id: string; status: string; stage: string; error?: string; draining?: boolean; input?: { heroCount?: number; detailCount?: number }; timingHistory?: TimingHistoryEntry[]; checkpoint: RunCheckpoint & Pick<import("@/lib/detail-runs/service-v4").V4Checkpoint, "lastError"> & { workflowVersion?: number; promptReview?: PromptReview; setReviewAssetIds?: string[]; requests?: Record<string, { state: string; error?: string; failureCode?: string; resultSource?: { url: string }; upstreamTask?: import("@/lib/ai/provider-client").UpstreamImageTask }>; requestTimings?: Record<string, RequestTiming> } };
 const workflowStageLabels: Record<string, string> = { INPUT_SUGGESTIONS: "推断商品补充选项", PREPARE: "准备商品资料", PLAN: "规划商品内容", WAITING_INPUT: "等待补充信息", WAITING_PROMPTS: "等待确认逐页提示词", ART_DIRECTION: "设计整套视觉分镜", GENERATE: "生成商品图片", IMAGE_REVIEW: "检查图片质量", SET_REVIEW: "检查整套页面" };
 const post = (url: string, data: unknown) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }).then(read);
 
-export function DetailWorkspace({ initialProject }: { initialProject: any }) {
+export function DetailWorkspace({ initialProject, pageMode = "preview" }: { initialProject: any; pageMode?: "preview" | "prompts" }) {
+  const router = useRouter();
   const [project, setProject] = useState(initialProject);
   const [run, setRun] = useState<Run | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -53,6 +55,7 @@ export function DetailWorkspace({ initialProject }: { initialProject: any }) {
   const [instruction, setInstruction] = useState("");
   const [language, setLanguage] = useState("en-US");
   const [retryUncertain, setRetryUncertain] = useState(false);
+  const [retryArtDirection, setRetryArtDirection] = useState(false);
   const [inputOpen, setInputOpen] = useState(false);
   const locked = useRef(false);
   const startKey = useRef<string>();
@@ -98,6 +101,12 @@ export function DetailWorkspace({ initialProject }: { initialProject: any }) {
   useEffect(() => {
     if (run?.status === "WAITING_INPUT") setInputOpen(true);
   }, [run?.id, run?.status]);
+  const waitingPrompts = run?.status === "WAITING_PROMPTS";
+  useEffect(() => {
+    if (!loaded || missing) return;
+    if (waitingPrompts && pageMode === "preview") router.replace(`/projects/${project.id}/prompts`);
+    if (!waitingPrompts && pageMode === "prompts") router.replace(`/projects/${project.id}/editor`);
+  }, [loaded, missing, waitingPrompts, pageMode, project.id, router]);
   const active = !loaded || Boolean(run && (["PENDING", "RUNNING", "WAITING_INPUT", "WAITING_PROMPTS"].includes(run.status) || run.draining));
   const sections = [...project.sections].sort((a, b) => a.order - b.order) as any[];
   const heroes = sections.filter(s => s.type === "HERO");
@@ -109,12 +118,13 @@ export function DetailWorkspace({ initialProject }: { initialProject: any }) {
   const generated = progress.filter(i => i.assetId).length;
   const canQueryImage = (sectionId: string) => {
     const task = run?.checkpoint.requests?.[`GENERATE:${sectionId}`]?.upstreamTask;
-    return Boolean(task && task.status !== "failed");
+    return Boolean(run?.checkpoint.requests?.[`GENERATE:${sectionId}`]?.resultSource || (task && task.status !== "failed"));
   };
   const pendingUpstream = progress.filter(i => !i.assetId && canQueryImage(i.sectionId)).length;
   const uncertain = progress.some(i => !i.assetId && ["uncertain", "generating"].includes(i.state) && !canQueryImage(i.sectionId))
-    || Object.values(run?.checkpoint.requests || {}).some(request => ["uncertain", "running"].includes(request.state) && !(request.upstreamTask && request.upstreamTask.status !== "failed"));
+    || Object.values(run?.checkpoint.requests || {}).some(request => ["uncertain", "running"].includes(request.state) && !request.resultSource && !(request.upstreamTask && request.upstreamTask.status !== "failed"));
   const reviewAssets = run?.checkpoint.setReviewAssetIds || progress.map(image => image.assetId);
+  const failedStoryboard = run?.checkpoint.lastError?.stage === "ART_DIRECTION" && !!run.checkpoint.plan && !generated;
   const v4ReviewAssetsMatch = reviewAssets.length === sections.length && sections.every((s, i) => s.currentImageAssetId && s.currentImageAssetId === reviewAssets[i]);
   const needsPageReview = (run?.checkpoint.workflowVersion === 4 || ((run?.checkpoint.plan as { version?: number } | undefined)?.version || 0) >= 2) && (!run?.checkpoint.setReview || (run?.checkpoint.workflowVersion === 4 && !v4ReviewAssetsMatch));
   const pendingWork = needsPageReview || !progress.length || progress.some(i => !i.assetId || i.state !== "checked" || (run?.checkpoint.workflowVersion !== 4 && i.check?.passed === false && i.correctionCount < 1));
@@ -192,7 +202,7 @@ export function DetailWorkspace({ initialProject }: { initialProject: any }) {
       startKey.current = undefined; setInstruction("");
     });
   }
-  const control = (action: string, data: unknown = {}) => act(async () => { await post(`${base}/detail-runs/${run!.id}/${action}`, data); setRetryUncertain(false); });
+  const control = (action: string, data: unknown = {}) => act(async () => { await post(`${base}/detail-runs/${run!.id}/${action}`, data); setRetryUncertain(false); setRetryArtDirection(false); });
   async function upload(files: FileList | null) {
     if (!files?.length) return;
     await act(async () => {
@@ -215,6 +225,13 @@ export function DetailWorkspace({ initialProject }: { initialProject: any }) {
     });
   }
   if (missing) return <section className="space-y-4 rounded-2xl border p-6"><h1 className="text-xl font-semibold">该作品已不存在</h1><p className="text-sm text-muted-foreground">作品可能已在其他页面删除。请选择其他作品继续。</p><Link href="/history" className="inline-block underline">返回我的作品</Link></section>;
+  if (pageMode === "prompts") return <div className="mx-auto max-w-5xl space-y-6">
+    <header><Link className="text-sm text-muted-foreground" href="/history">← 我的作品</Link><h1 className="mt-3 text-2xl font-semibold">{project.name} · 提示词确认</h1><p className="mt-2 text-sm text-muted-foreground">确认逐页提示词 → 生成图片 → 最终预览与下载</p></header>
+    {connectionError && <p role="alert" className="text-sm text-amber-700">{connectionError}</p>}
+    {waitingPrompts && run?.checkpoint.promptReview ? <PromptReviewPanel key={run.id} review={run.checkpoint.promptReview} busy={busy} onSubmit={control}/> : <p role="status" className="text-sm text-muted-foreground">{loaded ? "正在进入最终预览…" : "正在读取已保存的提示词…"}</p>}
+  </div>;
+  if (waitingPrompts) return <p role="status" className="text-sm text-muted-foreground">正在进入独立提示词确认页…</p>;
+  if (!loaded) return <p role="status" className="text-sm text-muted-foreground">{connectionError || "正在读取任务进度…"}</p>;
   return <div className="space-y-6">
     <header className="flex flex-wrap items-start justify-between gap-4"><div><Link className="text-sm text-muted-foreground" href="/history">← 我的作品</Link><h1 className="mt-3 text-2xl font-semibold">{project.name}</h1><p className="mt-2 text-sm text-muted-foreground">整套商品图 · 预览、修改与下载</p></div><div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy || !availableImages} onClick={() => downloadOutput("images")}><Download className="mr-2 h-4 w-4"/>分图 ZIP{availableImages ? `（${availableImages}）` : ""}</Button><Button disabled={!completeDetails || busy || Boolean(active)} onClick={() => downloadOutput("long-image")}>下载详情长图</Button></div></header>
     {downloadLink && <p role="status" className="text-sm text-muted-foreground">文件已准备好。如未自动下载，<a href={downloadLink.url} download={downloadLink.name} className="text-foreground underline underline-offset-4">点击保存 {downloadLink.name}</a>。</p>}
@@ -222,7 +239,6 @@ export function DetailWorkspace({ initialProject }: { initialProject: any }) {
       <div className="flex items-center justify-between gap-3 text-sm"><span className="flex items-center gap-2">{run.status === "RUNNING" && <Loader2 className="h-4 w-4 animate-spin"/>}{workflowStageLabels[run.stage] || run.stage}</span><span className="shrink-0 tabular-nums text-muted-foreground">{generated}/{totalImages} 张</span></div>
       <progress aria-label="生成进度" className="block h-2 w-full" max={totalImages} value={generated}/>
     </section>}
-    {run?.status === "WAITING_PROMPTS" && run.checkpoint.promptReview && <PromptReviewPanel key={run.id} review={run.checkpoint.promptReview} busy={busy} onSubmit={control}/>}
     <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
       <div className="min-w-0 space-y-6">
         <div className="flex flex-wrap gap-2" role="group" aria-label="预览方式"><Button variant={view === "phone" ? "default" : "outline"} aria-pressed={view === "phone"} onClick={() => setView("phone")}><Smartphone className="mr-2 h-4 w-4"/>手机预览</Button><Button variant={view === "images" ? "default" : "outline"} aria-pressed={view === "images"} onClick={() => setView("images")}><LayoutGrid className="mr-2 h-4 w-4"/>图片列表</Button></div>
@@ -270,9 +286,10 @@ export function DetailWorkspace({ initialProject }: { initialProject: any }) {
       {run.status === "CANCELED" && <p className="text-sm text-muted-foreground">{run.draining ? "已停止安排后续请求，正在等待已发出的请求结束并保存结果；收尾完成后可继续。" : "任务已停止，已完成的图片和检查结果均已保留。"}</p>}
       {run.checkpoint.workflowVersion === 4 && needsPageReview && generated > 0 && !active && <p className="text-sm text-amber-700 dark:text-amber-400">整套质量检查尚未完成，不代表检查通过。继续任务会保留现有图片；结果不确定的请求默认跳过。</p>}
       {["INTERRUPTED", "PARTIAL", "FAILED", "CANCELED"].includes(run.status) && <div className="space-y-3">
-        {pendingUpstream > 0 && <p className="text-sm text-muted-foreground">{pendingUpstream} 张图片已有上游任务编号；继续时查询原结果，不重新提交这些图片。</p>}
-        {uncertain && <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={retryUncertain} onChange={e => setRetryUncertain(e.target.checked)}/>重试结果不确定的请求，可能产生额外费用</label>}
-        {reviewOnly ? <p className="text-sm text-amber-700 dark:text-amber-400">图片已生成，检查结果仅作提示。请选中标记为需检查的图片核对或修改；已有图片和完整长图仍可下载。</p> : <Button disabled={busy || run.draining} onClick={() => control("resume", { retryUncertain })}>{run.draining ? "等待请求收尾" : uncertain && !retryUncertain ? "继续其余任务（跳过不确定请求）" : "继续未完成部分"}</Button>}
+        {pendingUpstream > 0 && <div className="space-y-2"><p className="text-sm text-muted-foreground">{pendingUpstream} 张图片已有任务编号或结果地址，可单独恢复，不重新生图、不调用质量检查模型。</p><Button variant="outline" disabled={busy || run.draining} onClick={() => control("resume", { recoverImagesOnly: true })}>仅恢复已有图片（查询 / 下载）</Button></div>}
+        {Object.entries(run.checkpoint.requests || {}).filter(([, request]) => request.state === "uncertain").map(([key, request]) => <p key={key} className="text-sm text-amber-700">{key.startsWith("GENERATE:") ? sections.find(section => key === `GENERATE:${section.id}`)?.title || "图片" : workflowStageLabels[key] || key}：{request.failureCode === "IMAGE_DOWNLOAD_FAILED" || request.resultSource ? "图片下载失败，结果地址已保存。可仅恢复已有图片。" : request.failureCode === "IMAGE_RESULT_QUERY_FAILED" || request.upstreamTask && request.upstreamTask.status !== "failed" ? "结果查询未完成。可仅查询原任务，不重新生图。" : `模型请求未完成。${request.error || "结果暂未确认，请核对调用记录后再决定是否授权重试。"}`}</p>)}
+        {failedStoryboard ? <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={retryArtDirection} onChange={e => setRetryArtDirection(e.target.checked)}/>仅重新请求失败的视觉分镜，可能再次计费。保留已完成规划，完成后等待确认逐页提示词。</label> : uncertain && <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={retryUncertain} onChange={e => setRetryUncertain(e.target.checked)}/>重试结果不确定的请求，可能产生额外费用</label>}
+        {reviewOnly ? <p className="text-sm text-amber-700 dark:text-amber-400">图片已生成，检查结果仅作提示。请选中标记为需检查的图片核对或修改；已有图片和完整长图仍可下载。</p> : <Button disabled={busy || run.draining || (failedStoryboard && !retryArtDirection)} onClick={() => control("resume", failedStoryboard ? { retryArtDirection } : { retryUncertain })}>{run.draining ? "等待请求收尾" : failedStoryboard ? "仅重试视觉分镜" : uncertain && !retryUncertain ? "继续其余任务（跳过不确定请求）" : "继续未完成部分"}</Button>}
       </div>}
           {run.status === "WAITING_INPUT" && <SupplementalInfoDialog
             key={`${run.id}:${supplementalQuestionSetId(supplementalQuestions)}`}

@@ -61,6 +61,7 @@ async function until(check, label) { for (let i = 0; i < 300; i++) { if (await c
       assert.deepEqual(forbidden, []);
       return;
     }
+    if (process.argv.includes('--async-image-only')) { await checkAsyncImage(browser, baseUrl, db); assert.deepEqual(forbidden, []); assert.equal(calls.length, 0); return; }
     await checkPromptReview(browser, baseUrl, db);
     if (process.argv.includes('--prompt-review-only')) { assert.deepEqual(forbidden, []); assert.equal(calls.length, 0); return; }
     await checkOutputCounts(browser, baseUrl, db);

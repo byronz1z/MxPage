@@ -1,5 +1,11 @@
 # MxPage · AI 电商详情页与商品图工作台
 
+源码更新：视觉分镜按自定义主图/详情图总数校验，页面下标必须完整且不重复。分镜失败后可明确确认可能再次计费并“仅重试视觉分镜”，复用已完成规划；成功后等待逐页提示词确认，不自动生成图片。
+
+提示词预览与确认位于独立的 `/projects/[id]/prompts` 页面，保存后留在确认页，明确确认生成后进入最终图片预览页。待确认任务从原预览入口打开时会自动进入提示词确认页。
+
+任务错误区分模型请求、结果查询与图片下载。模型请求结果不确定时需明确确认可能再次计费；“仅恢复已有图片（查询 / 下载）”只查询原任务或下载已保存地址，结束后暂停，不发起生图或质量检查请求。
+
 [简体中文](README.md) · [English](README.en.md) · [桌面版下载](https://github.com/ziguishian/MxPage/releases/latest) · [更新说明](docs/releases/v0.3.2.md) · [AI 文档索引](llms.txt)
 
 [![Release](https://img.shields.io/github/v/release/ziguishian/MxPage)](https://github.com/ziguishian/MxPage/releases/latest)

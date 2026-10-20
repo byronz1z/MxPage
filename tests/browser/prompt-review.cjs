@@ -19,7 +19,10 @@ module.exports = async function checkPromptReview(browser, baseUrl, db) {
     await page.goto(`${baseUrl}/projects/${project.id}/editor`);
     const panel = page.getByRole('region', { name: '生成前提示词确认' });
     await panel.waitFor();
-    assert.equal(await page.getByRole('button', { name: '生成这张图片', exact: true }).isDisabled(), true);
+    await page.waitForURL(`**/projects/${project.id}/prompts`);
+    assert.equal(await page.getByRole('button', { name: '生成这张图片', exact: true }).count(), 0);
+    assert.equal(await page.getByRole('group', { name: '预览方式' }).count(), 0);
+    assert.equal(await page.getByRole('button', { name: '下载详情长图', exact: true }).count(), 0);
     assert.deepEqual(posts, []);
     const input = page.getByRole('textbox', { name: '第 1 页完整提示词', exact: true });
     const detailInput = page.getByRole('textbox', { name: '第 2 页完整提示词', exact: true });
@@ -83,6 +86,11 @@ module.exports = async function checkPromptReview(browser, baseUrl, db) {
     assert.equal(await input.inputValue(), edited);
     await page.getByRole('button', { name: '确认全部 2 页并生成', exact: true }).click();
     await panel.waitFor({ state: 'hidden' });
+    await page.waitForURL(`**/projects/${project.id}/editor`);
+    await page.getByRole('group', { name: '预览方式' }).waitFor();
+    await page.goto(`${baseUrl}/projects/${project.id}/prompts`);
+    await page.waitForURL(`**/projects/${project.id}/editor`);
+    assert.equal(await page.getByRole('region', { name: '生成前提示词确认' }).count(), 0);
     assert.equal(confirmations.length, 2);
     assert.equal(confirmations[0].confirmationId, confirmations[1].confirmationId);
     assert.equal(confirmations[1].revision, other.promptReview.revision);

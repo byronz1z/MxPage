@@ -43,7 +43,7 @@ test("poll disconnect retains ID; resume only GETs, even with input references",
   await assert.rejects(generateEvoLinkImage({ model, prompt: "generate", onUpstreamTask: async value => { saved = value; } }, async (_url, init) => {
     if (init.method === "POST") { posts++; return json({ id: task.id }); }
     throw new TypeError("fetch failed");
-  }), { code: "IMAGE_TASK_PENDING" });
+  }), { code: "IMAGE_RESULT_QUERY_FAILED" });
   assert.deepEqual(saved, task);
   const result = await generateEvoLinkImage({ model, prompt: "generate", referenceImages: [image], upstreamTask: saved }, async (_url, init) => {
     assert.equal(init.method, "GET"); return done();

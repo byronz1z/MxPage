@@ -16,6 +16,10 @@ export function isStructuredSchemaRejection(error: unknown) {
 // Keep field-level business feedback, but never render SDK bodies, HTML or stacks.
 export function requestErrorMessage(error: unknown, fallback = "操作暂未完成，请稍后重试。已有结果不会被清除。") {
   const value = error as { code?: string; message?: string } | null;
+  if (value?.code === "MODEL_REQUEST_TIMEOUT") return "模型请求超时，结果暂未确认。请核对调用记录；只有明确确认可能再次计费后才会重新请求。";
+  if (value?.code === "MODEL_REQUEST_FAILED" || value?.code === "IMAGE_REQUEST_FAILED") return "模型请求失败或响应中断，结果暂未确认。请核对调用记录；只有明确确认可能再次计费后才会重新请求。";
+  if (value?.code === "IMAGE_DOWNLOAD_FAILED") return "图片已生成，但下载失败。请使用“仅恢复已有图片”重新下载，不需要重新生图。";
+  if (value?.code === "IMAGE_RESULT_QUERY_FAILED") return "图片结果查询失败，上游任务编号已保存。请使用“仅恢复已有图片”查询原任务，不会重新提交生图。";
   if (value?.code === "IMAGE_TASK_PENDING") return "图片结果查询暂未完成，上游任务编号已保存。继续任务只查询原结果，不会重新提交生图。";
   if (value?.code === "P2025") return "该项目或任务已不存在，请返回我的作品。";
   if (value?.code === "ENOENT") return "所需素材文件已不存在，请重新上传素材后继续。";

@@ -93,7 +93,7 @@ exports.check = async (browser, baseUrl, db, { providerUrl, pending, calls }) =>
     await start.scrollIntoViewIfNeeded();
     await page.screenshot({ path: `${output}/01-configure.png` });
     await start.click();
-    await page.waitForURL(`**/projects/${project.id}/editor`);
+    await page.waitForURL(`**/projects/${project.id}/prompts`);
     const panel = page.getByRole('region', { name: '生成前提示词确认' });
     await panel.waitFor();
     const run = await db.detailRun.findFirstOrThrow({ where: { projectId: project.id } });
@@ -119,6 +119,7 @@ exports.check = async (browser, baseUrl, db, { providerUrl, pending, calls }) =>
     await page.getByRole('button', { name: '确认全部 2 页并生成', exact: true }).click();
     await until(() => calls.filter(call => call.kind === 'IMAGE').length === 1, 'first image request');
     await until(() => panel.count().then(count => count === 0), 'approval panel closed');
+    await page.waitForURL(`**/projects/${project.id}/editor`);
     await page.getByRole('region', { name: '任务进度' }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: `${output}/06-generating.png` });
     pending.shift()();

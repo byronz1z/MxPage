@@ -64,7 +64,8 @@ export async function generateEvoLinkImage(
     try { result = await jsonRequest(`${api}/tasks/${encodeURIComponent(task.id)}`, { method: "GET" }); }
     catch (cause) {
       input.signal?.throwIfAborted();
-      throw Object.assign(new Error("图片结果查询暂未完成，上游任务编号已保存。继续任务只查询原结果，不会重新提交生图。", { cause }), { code: "IMAGE_TASK_PENDING" });
+      if ((cause as { code?: string })?.code === "IMAGE_TASK_PENDING") throw cause;
+      throw Object.assign(new Error("图片结果查询失败，上游任务编号已保存。请查询原任务，不要重新生图。", { cause }), { code: "IMAGE_RESULT_QUERY_FAILED" });
     }
     if (result.id !== task.id) throw new Error("图像服务返回的任务编号不匹配，已暂停查询。");
     if (result.status === "failed") {
