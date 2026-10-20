@@ -20,7 +20,7 @@
 
 主题只选择当前真实功能与技术栈，不添加未实现的平台、热门模型或无关产品名称。优先覆盖电商、商品图片、图片生成与编辑、小红书、批量处理、翻译、自部署和兼容 API。
 
-本次读取远端时已有 20 个主题。待功能验收与源码推送完成后，建议将 `portable`、`workflow-automation` 替换为更准确描述新增能力的 `langgraph`、`model-context-protocol`，保留其余主题。最终列表：`ai-agents`、`batch-processing`、`deterministic-workflow`、`e-commerce`、`electron`、`image-editing`、`image-generation`、`image-translation`、`langgraph`、`macos`、`model-context-protocol`、`nextjs`、`openai-compatible`、`product-detail-page`、`product-images`、`product-photography`、`self-hosted`、`typescript`、`windows`、`xiaohongshu`。这段是发布配置，不代表尚未提交的远端修改已生效。
+2026-10-20 完成各项目入口真实验收并推送源码后，已在 GitHub 保存上述简介和下载入口，将 `portable`、`workflow-automation` 替换为描述新增能力的 `langgraph`、`model-context-protocol`，保留其余主题。最终 20 个主题：`ai-agents`、`batch-processing`、`deterministic-workflow`、`e-commerce`、`electron`、`image-editing`、`image-generation`、`image-translation`、`langgraph`、`macos`、`model-context-protocol`、`nextjs`、`openai-compatible`、`product-detail-page`、`product-images`、`product-photography`、`self-hosted`、`typescript`、`windows`、`xiaohongshu`。已通过仓库页面核对，不代表搜索引擎已收录或排名已经变化。
 
 ## 文档一致性
 
