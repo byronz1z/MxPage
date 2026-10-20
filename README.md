@@ -6,7 +6,7 @@
 
 任务错误区分模型请求、结果查询与图片下载。模型请求结果不确定时需明确确认可能再次计费；“仅恢复已有图片（查询 / 下载）”只查询原任务或下载已保存地址，结束后暂停，不发起生图或质量检查请求。
 
-[简体中文](README.md) · [English](README.en.md) · [桌面版下载](https://github.com/ziguishian/MxPage/releases/latest) · [更新说明](docs/releases/v0.3.2.md) · [AI 文档索引](llms.txt)
+[简体中文](README.md) · [English](README.en.md) · [桌面版下载](https://github.com/ziguishian/MxPage/releases/latest) · [更新说明](docs/releases/v0.3.3.md) · [AI 文档索引](llms.txt)
 
 [![Release](https://img.shields.io/github/v/release/ziguishian/MxPage)](https://github.com/ziguishian/MxPage/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -27,7 +27,7 @@
 | 制作小红书图文 | 小红书图文，描述主题和张数 | 1–8 张竖版配图、标题、正文与标签 |
 | 用对话组织任务、处理文件 | Agent 工作台，确认执行方案 | 工具执行进度、可预览下载的成果 |
 
-详情页使用 **V4 确定性工作流**，Agent 工作台使用独立的 **LangGraph.js + Deep Agents** 工具循环。恢复规则、支持范围与实测记录见[发布说明](docs/releases/v0.3.2.md)、[模型兼容](docs/provider-compatibility.md)及[验收记录](docs/provider-live-acceptance.md)。仓库 `main` 的新功能可能尚未打包进最新 Release，安装包以对应版本说明为准。
+详情页使用 **V4 确定性工作流**，Agent 工作台使用独立的 **LangGraph.js + Deep Agents** 工具循环。恢复规则、支持范围与实测记录见[发布说明](docs/releases/v0.3.3.md)、[模型兼容](docs/provider-compatibility.md)及[验收记录](docs/provider-live-acceptance.md)。仓库 `main` 的新功能可能尚未打包进最新 Release，安装包以对应版本说明为准。
 
 ## 主要功能
 
@@ -124,10 +124,10 @@
 
 在 [GitHub Releases](https://github.com/ziguishian/MxPage/releases/latest) 选择对应系统：
 
-| 系统 | v0.3.2 文件 | 使用方式 |
+| 系统 | v0.3.3 文件 | 使用方式 |
 | --- | --- | --- |
-| Windows x64 | `MxPage-0.3.2-windows-x64.zip` | 完整解压后运行 `MxPage.exe` |
-| macOS Apple Silicon | `MxPage-0.3.2-macos-arm64.zip` | 解压打开 `MxPage.app`，也可移到“应用程序” |
+| Windows x64 | `MxPage-0.3.3-windows-x64.zip` | 完整解压后运行 `MxPage.exe` |
+| macOS Apple Silicon | `MxPage-0.3.3-macos-arm64.zip` | 解压打开 `MxPage.app`，也可移到“应用程序” |
 | macOS Intel | `MxPage-0.3.2-macos-x64.zip` | 解压打开 `MxPage.app`，也可移到“应用程序” |
 
 绿色包包含 Electron 和本地服务，**无需安装 Node.js**。不要单独复制 EXE 或移动 `.app` 内部文件。免安装不代表数据跟随程序目录移动：
@@ -292,7 +292,7 @@ tests/                  隔离的单元及流程测试
 
 翻译结果完成后停止定时刷新，切回页面时同步一次；全局队列空闲时每 30 秒检查，页面隐藏时暂停。作品封面优先使用按页面顺序选中的译图或生成结果，尚未出图时使用原图，原图对照和历史素材保持可用。
 
-[更新说明](docs/releases/v0.3.2.md) · [恢复与可靠性](docs/workflow-v4-reliability.md) · [批量翻译](docs/translation-workflow.md) · [任务队列](docs/global-task-queue.md) · [计费](docs/api-billing.md) · [案例](docs/examples/README.md) · [问题反馈](https://github.com/ziguishian/MxPage/issues)
+[更新说明](docs/releases/v0.3.3.md) · [恢复与可靠性](docs/workflow-v4-reliability.md) · [批量翻译](docs/translation-workflow.md) · [任务队列](docs/global-task-queue.md) · [计费](docs/api-billing.md) · [案例](docs/examples/README.md) · [问题反馈](https://github.com/ziguishian/MxPage/issues)
 
 反馈请附版本、复现步骤与脱敏错误，不要提交 API Key 或私人商品资料。
 

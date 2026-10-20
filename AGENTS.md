@@ -1,7 +1,7 @@
 # MxPage contributor guide
 
 Read this file first when working on the repository. Product facts and links are in
-`llms.txt`; the current release is documented in `docs/releases/v0.3.2.md`.
+`llms.txt`; the current release is documented in `docs/releases/v0.3.3.md`.
 
 ## Project and commands
 

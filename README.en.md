@@ -6,7 +6,7 @@ Prompt review has its own `/projects/[id]/prompts` page before the final image p
 
 Workflow errors distinguish model requests, result queries and image downloads. Ambiguous model retries require explicit billing consent. Recovering existing images only queries saved task IDs or downloads saved result URLs, then pauses without generation or model review requests.
 
-[简体中文](README.md) · **English** · [Desktop downloads](https://github.com/ziguishian/MxPage/releases/latest) · [Release notes](docs/releases/v0.3.2.md) · [AI documentation](llms.txt)
+[简体中文](README.md) · **English** · [Desktop downloads](https://github.com/ziguishian/MxPage/releases/latest) · [Release notes](docs/releases/v0.3.3.md) · [AI documentation](llms.txt)
 
 MxPage is an MIT-licensed, locally deployable workspace for product hero images, complete e-commerce detail pages, batch image translation and Xiaohongshu / RED posts. Maintained by **Lingju Huijing (灵矩绘境 / MatrixInspire)**.
 
@@ -22,7 +22,7 @@ Built for e-commerce operators, cross-border sellers, designers and self-hosting
 | Xiaohongshu / RED content | Xiaohongshu workspace | 1–8 portrait images, title, caption and hashtags |
 | Approved conversation and file tasks | Agent workspace | Tool progress and downloadable artifacts |
 
-Product detail generation uses the **deterministic V4 workflow**. The separate Agent workspace uses **LangGraph.js + Deep Agents**. See [release notes](docs/releases/v0.3.2.md), [provider compatibility](docs/provider-compatibility.md) and [live acceptance](docs/provider-live-acceptance.md) for tested scope. Features on `main` may not yet be included in the latest desktop archive; check the matching release notes.
+Product detail generation uses the **deterministic V4 workflow**. The separate Agent workspace uses **LangGraph.js + Deep Agents**. See [release notes](docs/releases/v0.3.3.md), [provider compatibility](docs/provider-compatibility.md) and [live acceptance](docs/provider-live-acceptance.md) for tested scope. Features on `main` may not yet be included in the latest desktop archive; check the matching release notes.
 
 ## Features
 
@@ -111,10 +111,10 @@ These three studies used `gpt-6-luna` and `gpt-image-2.5-flare` at `low` quality
 
 Download from [Releases](https://github.com/ziguishian/MxPage/releases/latest):
 
-| Platform | v0.3.2 asset |
+| Platform | v0.3.3 asset |
 | --- | --- |
-| Windows x64 | `MxPage-0.3.2-windows-x64.zip` |
-| macOS Apple Silicon | `MxPage-0.3.2-macos-arm64.zip` |
+| Windows x64 | `MxPage-0.3.3-windows-x64.zip` |
+| macOS Apple Silicon | `MxPage-0.3.3-macos-arm64.zip` |
 | macOS Intel | `MxPage-0.3.2-macos-x64.zip` |
 
 Extract the entire ZIP and open `MxPage.exe` or `MxPage.app`. No separate Node.js installation is needed. The Mac app can be moved to Applications. These are installation-free archives; user data stays in the OS data directory rather than beside the executable:
