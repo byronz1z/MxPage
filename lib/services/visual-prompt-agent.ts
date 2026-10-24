@@ -161,7 +161,14 @@ function buildFallbackPrompt(input: BuildVisualPromptInput) {
 
 function shouldFallback(error: unknown) {
   if (!(error instanceof Error)) return false;
-  return /timed out|timeout|temperature|unsupported|invalid json|structured|parse|network error|fetch failed/i.test(error.message);
+  // Localized transport errors (e.g. "模型响应等待超过 60 秒") and TimeoutError do not
+  // contain an English "timeout" token, so match on name/code as well: a slow
+  // prompt-model call must degrade to the built-in fallback prompt instead of
+  // failing the whole image task.
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "string" && /TIMEOUT/i.test(code)) return true;
+  if (error.name === "TimeoutError") return true;
+  return /timed out|timeout|temperature|unsupported|invalid json|structured|parse|network error|fetch failed|超时|等待超过/i.test(error.message);
 }
 
 export async function buildVisualPromptWithAgent(input: BuildVisualPromptInput) {
