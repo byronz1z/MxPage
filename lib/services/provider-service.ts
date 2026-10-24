@@ -160,7 +160,7 @@ async function replaceProviderModels(
 }
 
 export async function testProviderConnection(input: ProviderConnectionInput) {
-  const adapter = new OpenAICompatibleAdapter(resolveEffectiveBaseUrl(input.baseUrl), input.apiKey);
+  const adapter = new OpenAICompatibleAdapter(resolveEffectiveBaseUrl(input.baseUrl), input.apiKey, textSettings(input));
   return adapter.testConnection();
 }
 
@@ -184,12 +184,17 @@ export async function resolveProviderConnectionInput(
     name: input.name,
     baseUrl,
     apiKey,
+    textProtocol: input.textProtocol,
+    structuredOutputMode: input.structuredOutputMode,
   };
 }
 
 export async function discoverProviderModels(input: ProviderConnectionInput) {
   const baseUrl = resolveEffectiveBaseUrl(input.baseUrl);
-  const adapter = new OpenAICompatibleAdapter(baseUrl, input.apiKey);
+  // Discovery must honour the selected protocol: with an explicit protocol the
+  // request carries only that protocol's credentials, so gateways return their
+  // standard catalogue instead of a protocol-specific (renamed) one.
+  const adapter = new OpenAICompatibleAdapter(baseUrl, input.apiKey, textSettings(input));
   const models = await adapter.listModels();
   const normalized = enrichModelEndpointSupport(normalizeDetectedModels(models)).map(model => {
     const contract = resolveImageProtocol(baseUrl) === "evolink_tasks" ? evoLinkImageContract(model.modelId) : undefined;

@@ -315,6 +315,7 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
     name: selectedProvider?.name ?? "默认 GPT 模型服务",
     baseUrl: lockedBaseUrl || selectedProvider?.baseUrl || "https://api.openai.com/v1",
     apiKey: "",
+    textProtocol: selectedProvider?.textProtocol ?? "auto",
   });
 
   useEffect(() => {
@@ -330,6 +331,7 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
       name: nextProvider?.name ?? "默认 GPT 模型服务",
       baseUrl,
       apiKey: normalizeOpenAiBaseUrl(stored.baseUrl) === normalizeOpenAiBaseUrl(baseUrl) ? stored.apiKey : "",
+      textProtocol: nextProvider?.textProtocol ?? "auto",
     });
   }, [selectedProvider, lockedBaseUrl]);
 
@@ -398,6 +400,7 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
       name: form.name.trim() || "默认 GPT 模型服务",
       baseUrl: baseUrlLocked ? lockedBaseUrl : form.baseUrl.trim(),
       apiKey: form.apiKey.trim(),
+      textProtocol: form.textProtocol,
       isActive: true,
     };
   }
@@ -647,10 +650,29 @@ export function ProviderSettings({ initialProviders, runtimeConfig }: ProviderSe
             </div>
             {!baseUrlLocked ? (
               <div className="space-y-2 md:col-span-2">
-                <Label htmlFor="provider-base-url">baseURL</Label>
+              <Label htmlFor="provider-base-url">baseURL</Label>
                 <Input id="provider-base-url" disabled={loading !== null} inputMode="url" autoComplete="off" autoCapitalize="none" value={form.baseUrl} onChange={(event) => updateForm({ baseUrl: event.target.value })} placeholder="https://your-provider.example/v1" />
               </div>
             ) : null}
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="provider-text-protocol">接口协议</Label>
+              <select
+                id="provider-text-protocol"
+                disabled={loading !== null}
+                value={form.textProtocol}
+                onChange={(event) => updateForm({ textProtocol: event.target.value })}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <option value="auto">自动检测（默认，兼容旧配置）</option>
+                <option value="chat_completions">OpenAI 兼容 · Chat Completions</option>
+                <option value="responses">OpenAI 兼容 · Responses</option>
+                <option value="anthropic_messages">Anthropic Messages</option>
+                <option value="gemini_native">Gemini Native</option>
+              </select>
+              <p className="text-xs text-muted-foreground">
+                选定协议后，模型发现与调用只使用该协议，不再自动切换，也不会按其他协议的鉴权头取目录。第三方 OpenAI 兼容中转请选「Chat Completions」。
+              </p>
+            </div>
             <div className="space-y-2 md:col-span-2">
               <Label htmlFor="provider-api-key">API Key</Label>
               <Input id="provider-api-key" disabled={loading !== null} type="password" autoComplete="new-password" value={form.apiKey} onChange={(event) => updateForm({ apiKey: event.target.value })} placeholder="请输入当前浏览器使用的 API Key" />

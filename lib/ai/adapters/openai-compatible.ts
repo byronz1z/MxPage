@@ -891,7 +891,20 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
   async listModels() {
     // Read-only discovery may try another documented endpoint after 404/405.
     // Auth errors, timeouts and accepted responses never trigger a fallback.
-    const headers = { "x-api-key": this.apiKey, "anthropic-version": "2023-06-01", "x-goog-api-key": this.apiKey };
+    // Only the selected protocol's credentials are sent: mixing Anthropic/Gemini
+    // headers into an OpenAI-compatible request makes gateways switch their
+    // catalogue (and sometimes rewrite model IDs), so protocol stays explicit.
+    const configured = this.settings.textProtocol;
+    const host = new URL(this.baseUrl).hostname;
+    const protocol = configured && configured !== "auto"
+      ? configured
+      : host === "api.anthropic.com" ? "anthropic_messages"
+        : host === "generativelanguage.googleapis.com" ? "gemini_native" : configured;
+    const headers: Record<string, string> = protocol === "anthropic_messages"
+      ? { "x-api-key": this.apiKey, "anthropic-version": "2023-06-01" }
+      : protocol === "gemini_native"
+        ? { "x-goog-api-key": this.apiKey }
+        : { Authorization: `Bearer ${this.apiKey}` };
     const nativeUrl = `${normalizeOpenAiBaseUrl(this.baseUrl).replace(/\/v\d+(?:beta)?$/, "/v1beta")}/models`;
     const nativeOrigin = new URL(this.baseUrl).hostname === "generativelanguage.googleapis.com";
     let response = nativeOrigin ? await this.fetchRaw(nativeUrl, { method: "GET", headers }) : await this.requestRaw("/models", { method: "GET", headers });
